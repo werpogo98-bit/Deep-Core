@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Классическая Змейка</title>
+    <style>
+        body {
+            background-color: #1a1a1a;
+            color: #ffffff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+            overflow: hidden;
+        }
+        #score-board {
+            font-size: 24px;
+            margin-bottom: 10px;
+            font-weight: bold;
+        }
+        canvas {
+            background-color: #2d2d2d;
+            border: 4px solid #4caf50;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.5);
+        }
+    </style>
+</head>
+<body>
+
+    <div id="score-board">Счёт: <span id="score">0</span></div>
+    <canvas id="gameCanvas" width="400" height="400"></canvas>
+
+    <script>
+        const canvas = document.getElementById("gameCanvas");
+        const ctx = canvas.getContext("2d");
+        const scoreElement = document.getElementById("score");
+
+        const gridSize = 20;
+        const tileCount = canvas.width / gridSize;
+
+        let snake = [
+            { x: 10, y: 10 },
+            { x: 9, y: 10 },
+            { x: 8, y: 10 }
+        ];
+
+        let food = { x: 5, y: 5 };
+
+        // Вектор движения
+        let dx = 1;
+        let dy = 0;
+
+        // Флаг для исправления бага быстрой смены направления
+        let changingDirection = false; 
+
+        let score = 0;
+        let gameInterval;
+
+        // Основной цикл игры (скорость: 100мс на шаг)
+        function main() {
+            if (hasGameEnded()) {
+                alert(`Игра окончена! Ваш счёт: ${score}`);
+                resetGame();
+                return;
+            }
+
+            changingDirection = false;
+            clearCanvas();
+            drawFood();
+            moveSnake();
+            drawSnake();
+        }
+
+        // Запуск
+        resetGame();
+
+        function clearCanvas() {
+            ctx.fillStyle = "#2d2d2d";
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+
+        function drawSnake() {
+            snake.forEach((part, index) => {
+                // Голова змейки чуть темнее, тело — светлее
+                ctx.fillStyle = index === 0 ? "#388e3c" : "#4caf50";
+                ctx.fillRect(part.x * gridSize, part.y * gridSize, gridSize - 2, gridSize - 2);
+            });
+        }
+
+        function moveSnake() {
+            // Создаем новую голову на основе текущего направления
+            const head = { x: snake[0].x + dx, y: snake[0].y + dy };
+            snake.unshift(head);
+
+            // Проверка: съела ли змейка еду
+            const hasEatenFood = snake[0].x === food.x && snake[0].y === food.y;
+            if (hasEatenFood) {
+                score += 10;
+                scoreElement.innerText = score;
+                generateFood();
+            } else {
+                // Если не съела, убираем хвост
+                snake.pop();
+            }
+        }
+
+        function drawFood() {
+            ctx.fillStyle = "#f44336";
+            ctx.fillRect(food.x * gridSize, food.y * gridSize, gridSize - 2, gridSize - 2);
+        }
+
+        function randomCoord() {
+            return Math.floor(Math.random() * tileCount);
+        }
+
+        function generateFood() {
+            // Безбажный спавн еды: проверяем, чтобы еда не появилась внутри змейки
+            food.x = randomCoord();
+            food.y = randomCoord();
+
+            const foodOnSnake = snake.some(part => part.x === food.x && part.y === food.y);
+            if (foodOnSnake) {
+                generateFood();
+            }
+        }
+
+        function hasGameEnded() {
+            // Столкновение со стенами
+            const hitLeftWall = snake[0].x < 0;
+            const hitRightWall = snake[0].x >= tileCount;
+            const hitToptWall = snake[0].y < 0;
+            const hitBottomWall = snake[0].y >= tileCount;
+
+            if (hitLeftWall || hitRightWall || hitToptWall || hitBottomWall) return true;
+
+            // Столкновение с самим собой (проверяем со 2-го элемента, т.к. 0-й — это голова)
+            for (let i = 4; i < snake.length; i++) {
+                if (snake[i].x === snake[0].x && snake[i].y === snake[0].y) return true;
+            }
+
+            return false;
+        }
+
+        // Обработка нажатий клавиш с защитой от мгновенного разворота в себя
+        function changeDirection(event) {
+            const keyPressed = event.keyCode;
+            
+            const LEFT_KEY = 37;
+            const UP_KEY = 38;
+            const RIGHT_KEY = 39;
+            const DOWN_KEY = 40;
+
+            if (changingDirection) return;
+
+            const goingUp = dy === -1;
+            const goingDown = dy === 1;
+            const goingRight = dx === 1;
+            const goingLeft = dx === -1;
+
+            if (keyPressed === LEFT_KEY && !goingRight) {
+                dx = -1; dy = 0;
+                changingDirection = true;
+            }
+            if (keyPressed === UP_KEY && !goingDown) {
+                dx = 0; dy = -1;
+                changingDirection = true;
+            }
+            if (keyPressed === RIGHT_KEY && !goingLeft) {
+                dx = 1; dy = 0;
+                changingDirection = true;
+            }
+            if (keyPressed === DOWN_KEY && !goingUp) {
+                dx = 0; dy = 1;
+                changingDirection = true;
+            }
+        }
+
+        function resetGame() {
+            clearInterval(gameInterval);
+            snake = [
+                { x: 10, y: 10 },
+                { x: 9, y: 10 },
+                { x: 8, y: 10 }
+            ];
+            dx = 1;
+            dy = 0;
+            score = 0;
+            scoreElement.innerText = score;
+            changingDirection = false;
+            generateFood();
+            gameInterval = setInterval(main, 100);
+        }
+
+        document.addEventListener("keydown", changeDirection);
+    </script>
+</body>
+</html>
