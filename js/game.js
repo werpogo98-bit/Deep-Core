@@ -42,6 +42,18 @@
   var clinkStep = 0, clinkTimer = 0;
   var contactThisFrame = false;
 
+  /* ---------- Stage 2 state ---------- */
+  var comboCount = 0;           // tiles broken within the rolling window
+  var comboWindowT = 0;         // time left in current window
+  var comboBadgeT = 0;          // badge visibility timer
+  var comboBadgeText = '';
+  var chainQuartz = [];         // pending quartz chain steps {r,c,t}
+  var chainPitch = 0;           // ascending pitch index across a chain
+  var shockTimer = 0;           // SHOCK DRILL countdown
+  var shockRings = [];          // expanding ring FX {x,y(world),t}
+  var magmaHeatLatch = {};      // per-tile latch so magma heats once per touch
+  var spikeLatch = {};          // per-tile latch so a mine only bites once
+
   var meta = loadMeta();        // garage levels persist between runs
 
   /* ---------- Entities ---------- */
@@ -58,10 +70,16 @@
       var raw = localStorage.getItem(cfg.STORAGE.META);
       if (raw) {
         var m = JSON.parse(raw);
-        return { dps: m.dps | 0, hull: m.hull | 0, cooling: m.cooling | 0, magnet: m.magnet | 0 };
+        // Stage 2: migrate legacy keys (hull/cooling/magnet -> radiator/vacuum/shock)
+        return {
+          dps:      m.dps | 0,
+          radiator: m.radiator | 0 || Math.max(m.cooling | 0, m.hull | 0),
+          vacuum:   m.vacuum | 0 || m.magnet | 0,
+          shock:    m.shock | 0
+        };
       }
     } catch (e) {}
-    return { dps: 0, hull: 0, cooling: 0, magnet: 0 };
+    return { dps: 0, radiator: 0, vacuum: 0, shock: 0 };
   }
   function saveMeta() {
     try { localStorage.setItem(cfg.STORAGE.META, JSON.stringify(meta)); } catch (e) {}
@@ -77,17 +95,53 @@
     var u = cfg.UPGRADES[key];
     return Math.floor(u.baseCost * Math.pow(u.costMult, meta[key]));
   }
+  /* --- Stage 2 derived stats --- */
   function effectiveDPS() {
     return cfg.SAW.DPS_BASE * (1 + meta.dps * cfg.UPGRADES.dps.effect);
   }
-  function coolingRate() {
-    return cfg.HEAT.IDLE_COOL * (1 + meta.cooling * cfg.HEAT.COOL_UPGRADE_MULT);
+  function sawTeethCount() {           // evolves every 5 levels
+    return cfg.SAW.TEETH + Math.floor(meta.dps / 5) * 4;
   }
-  function suctionForce() {
-    return cfg.NUGGET.SUCTION_BASE * (1 + meta.magnet * cfg.NUGGET.SUCTION_UPGRADE_MULT);
+  function sawRadiusMult() {           // bigger blade at higher tiers
+    return 1 + Math.floor(meta.dps / 5) * 0.12;
+  }
+  function sawVisualTier() {           // 0 brass -> 1 crimson -> 2 plasma rim
+    return Math.min(2, Math.floor(meta.dps / 5));
+  }
+  function coolingRate() {             // RADIATOR speeds passive cooling too
+    return cfg.HEAT.IDLE_COOL * (1 + meta.radiator * 0.18);
+  }
+  function heatBuildupFactor() {       // -12% per radiator level
+    return Math.max(0.4, 1 - meta.radiator * cfg.HEAT.RAD_BUILD_REDUCE);
+  }
+  function redlineMin() {              // zone widens toward 70 at L5+
+    var l = meta.radiator;
+    if (l < 5) return cfg.HEAT.REDLINE_MIN;
+    var t = Math.min(1, (l - 4) / 2);
+    return cfg.HEAT.RAD_ZONE_MIN_L0 + (cfg.HEAT.RAD_ZONE_MIN_L5 - cfg.HEAT.RAD_ZONE_MIN_L0) * t;
+  }
+  function redlineMax() {              // ...and toward 96 at L5+
+    var l = meta.radiator;
+    if (l < 5) return cfg.HEAT.REDLINE_MAX;
+    var t = Math.min(1, (l - 4) / 2);
+    return cfg.HEAT.RAD_ZONE_MAX_L0 + (cfg.HEAT.RAD_ZONE_MAX_L5 - cfg.HEAT.RAD_ZONE_MAX_L0) * t;
+  }
+  function nuggetValue() {             // ORE VACUUM +25%/level
+    return cfg.NUGGET.VALUE * (1 + meta.vacuum * cfg.UPGRADES.vacuum.effect);
+  }
+  function extraNuggets() {            // +1 per broken Gold/Quartz tile
+    return meta.vacuum >= 1 ? 1 : 0;
+  }
+  function suctionForce() {            // vacuum also helps magnetism a bit
+    return cfg.NUGGET.SUCTION_BASE * (1 + meta.vacuum * 0.15);
+  }
+  function shockPeriod() {             // SHOCK DRILL fires faster with levels
+    if (meta.shock <= 0) return Infinity;
+    return Math.max(cfg.SHOCK.MIN_PERIOD,
+      cfg.SHOCK.BASE_PERIOD - (meta.shock - 1) * cfg.SHOCK.PERIOD_PER_LEVEL);
   }
   function inRedline() {
-    return heat >= cfg.HEAT.REDLINE_MIN && heat <= cfg.HEAT.REDLINE_MAX;
+    return heat >= redlineMin() && heat <= redlineMax();
   }
   function anchorY() { return H * cfg.SAW.ANCHOR_Y_RATIO; }
 
@@ -148,7 +202,7 @@
     saw.vx = 0; saw.spin = 0; saw.spinSpeed = cfg.SAW.SPIN_BASE;
     camY = -anchorY();                  // negative until camera reaches 0
     heat = 0;
-    maxHp = Math.min(cfg.PLAYER.START_HP + meta.hull * cfg.UPGRADES.hull.effect, cfg.PLAYER.MAX_HP_CAP);
+    maxHp = cfg.PLAYER.START_HP;
     hp = maxHp;
     gold = cfg.PLAYER.START_GOLD;
     tilesCarved = 0;
@@ -156,6 +210,12 @@
     boost = false; pointerActive = false; steerTargetX = null;
     particles.length = 0; nuggets.length = 0; floaters.length = 0;
     shake = 0; clinkStep = 0; clinkTimer = 0;
+    /* Stage 2 resets */
+    comboCount = 0; comboWindowT = 0; comboBadgeT = 0; comboBadgeText = '';
+    chainQuartz.length = 0; chainPitch = 0;
+    shockTimer = shockPeriod();         // first discharge after one full period
+    shockRings.length = 0;
+    magmaHeatLatch = {}; spikeLatch = {};
     elBoostHint.classList.remove('hidden');
     updateHUD(true);
   }
@@ -205,8 +265,11 @@
 
     elHeatFill.style.width = clamp(heat, 0, cfg.HEAT.MAX) + '%';
     elHeatBar.classList.toggle('redline', inRedline());
-    elHeatBar.classList.toggle('danger', heat > cfg.HEAT.REDLINE_MAX);
+    elHeatBar.classList.toggle('danger', heat > redlineMax());
     elRedTag.classList.toggle('active', inRedline());
+    /* Stage 2: move the CSS redline zone to match the widened RADIATOR zone */
+    elHeatBar.style.setProperty('--rl-min', redlineMin() + '%');
+    elHeatBar.style.setProperty('--rl-max', redlineMax() + '%');
 
     refreshShop();
   }
@@ -239,6 +302,7 @@
 
   function buyUpgrade(key) {
     var u = cfg.UPGRADES[key];
+    if (!u || meta[key] === undefined) return;
     if (meta[key] >= u.maxLevel) return;
     var c = upgradeCost(key);
     if (gold < c) return;
@@ -246,11 +310,23 @@
     meta[key]++;
     saveMeta();
     audio.uiClick();
-    if (key === 'hull') {
-      maxHp = Math.min(cfg.PLAYER.START_HP + meta.hull * cfg.UPGRADES.hull.effect, cfg.PLAYER.MAX_HP_CAP);
-      hp = Math.min(hp + 1, maxHp);   // new plate also repairs 1
+
+    /* Stage 2: live mid-run effects */
+    if (key === 'radiator') {
+      // RADIATOR heals +1 Hull HP on purchase if below max, and also adds a
+      // permanent +1 max plate every 3 levels (capped).
+      if (meta.radiator % 3 === 0 && maxHp < cfg.PLAYER.MAX_HP_CAP) {
+        maxHp++;
+        hp = Math.min(hp + 1, maxHp);
+      } else if (hp < maxHp) {
+        hp++;
+      }
       updateHUD(true);
     }
+    if (key === 'shock' && meta.shock === 1) {
+      shockTimer = 1.5;   // first discharge arrives quickly as a reward
+    }
+    addFloater(u.name + ' L' + meta[key], '#F2B705');
     var btn = shopBtns[key];
     btn.classList.remove('flash'); void btn.offsetWidth; btn.classList.add('flash');
     updateHUD(false);
@@ -274,6 +350,30 @@
     for (var i = 0; i < 14; i++) {
       addParticle(wx + rand(-14, 14), wy + rand(-10, 10),
         rand(-40, 40), rand(-150, -60), '#FFFFFF', rand(3, 7), rand(0.5, 0.9));
+    }
+  }
+
+  /* Stage 2: emerald shard shower for quartz chain reactions */
+  function emeraldShower(wx, wy, count) {
+    var palette = ['#1B998B', '#5BC0BE', '#A9E8DF', '#FFFFFF'];
+    for (var i = 0; i < count; i++) {
+      var a = rand(0, Math.PI * 2), sp = rand(90, 320);
+      addParticle(wx, wy, Math.cos(a) * sp, Math.sin(a) * sp - 120,
+        palette[i % palette.length], rand(2, 6), rand(0.4, 0.9));
+    }
+  }
+
+  /* ================= Combo tracking (Stage 2) ================= */
+  function registerBreak() {
+    comboCount++;
+    comboWindowT = cfg.COMBO.WINDOW;
+    for (var i = cfg.COMBO.TIERS.length - 1; i >= 0; i--) {
+      if (comboCount === cfg.COMBO.TIERS[i].n) {
+        comboBadgeText = cfg.COMBO.TIERS[i].label.replace('!', ' x' + comboCount + '!');
+        comboBadgeT = 1.6;
+        audio.uiClick();
+        break;
+      }
     }
   }
 
@@ -305,6 +405,7 @@
     var def = tileDefById(tile.t);
     world.setTileEmpty(row, col);
     tilesCarved++;
+    delete magmaHeatLatch[row + ':' + col];   // Stage 2: latch dies with the tile
 
     var cx = tileWorldX(col) + tileSize / 2;
     var cy = tileWorldY(row) + tileSize / 2;
@@ -312,13 +413,18 @@
     burstDebris(cx, cy, def, viaExplosion ? 10 : 7);
 
     var redlineMult = inRedline() ? cfg.HEAT.NUGGET_REDLINE_MULT : 1;
+    var nv = nuggetValue();                   // ORE VACUUM value scaling
 
     if (def.name === 'GOLD') {
-      // Base 2 nuggets, doubled inside REDLINE => 2x GOLD NUGGETS
-      var count = 2 * redlineMult;
-      for (var i = 0; i < count; i++) spawnNugget(cx, cy, cfg.NUGGET.VALUE, 'gold');
+      // Base 2 nuggets (+1 per ORE VACUUM level), doubled inside REDLINE => 2x GOLD NUGGETS
+      var count = (2 + extraNuggets()) * redlineMult;
+      for (var i = 0; i < count; i++) spawnNugget(cx, cy, nv, 'gold');
     } else if (def.name === 'QUARTZ') {
-      spawnNugget(cx, cy, cfg.NUGGET.QUARTZ_CHIP, 'chip');
+      spawnNugget(cx, cy, cfg.NUGGET.QUARTZ_CHIP * (nv / cfg.NUGGET.VALUE), 'chip');
+      if (extraNuggets()) spawnNugget(cx, cy, nv, 'gold');
+      /* Stage 2: emerald chain reaction — adjacent quartz shatters in a
+         0.06s cascade with ascending pitch + bonus gold shower. */
+      startQuartzChain(row, col);
     } else if (def.name === 'TNT') {
       detonate(row, col);
     } else if (def.name === 'ICE') {
@@ -326,9 +432,140 @@
       steamPuff(cx, cy);
       audio.steamHiss();
       addFloater('-35 HEAT', '#1B998B');
+    } else if (def.name === 'SPIKE_MINE') {
+      // Broken safely (shockwave/TNT/overheat) or sliced in redline already
+      // paid out at contact time; nothing extra here.
+      audio.rockBreak(rand(-200, 200));
+      spikeBoomFX(cx, cy);
+    } else if (def.name === 'MAGMA_ROCK') {
+      audio.rockBreak(rand(-200, 200));
+      for (var mg = 0; mg < 8; mg++) {
+        addParticle(cx + rand(-10, 10), cy + rand(-10, 10), rand(-30, 30), rand(-120, -40),
+          Math.random() < 0.5 ? '#E63946' : '#F2B705', rand(2, 5), rand(0.3, 0.7));
+      }
+      if (Math.random() < 0.25) spawnNugget(cx, cy, nv, 'gold');
     } else {
       audio.rockBreak(rand(-200, 200));
-      if (Math.random() < 0.12 * redlineMult) spawnNugget(cx, cy, cfg.NUGGET.VALUE, 'gold');
+      if (Math.random() < 0.12 * redlineMult) spawnNugget(cx, cy, nv, 'gold');
+    }
+
+    registerBreak();                          // Stage 2 combo dopamine
+  }
+
+  /* ---------- Stage 2: quartz chain cascade ---------- */
+  function startQuartzChain(row, col) {
+    queueQuartzNeighbors(row, col);
+  }
+  function queueQuartzNeighbors(row, col) {
+    var dirs = [[-1, 0], [1, 0], [0, -1], [0, 1]];
+    for (var i = 0; i < dirs.length; i++) {
+      var r = row + dirs[i][0], c = col + dirs[i][1];
+      var t = world.getTile(r, c);
+      if (t && t.t === T.QUARTZ.id) {
+        // dedupe: same cell may be queued from several sides
+        for (var j = 0; j < chainQuartz.length; j++) {
+          if (chainQuartz[j].r === r && chainQuartz[j].c === c) return;
+        }
+        chainQuartz.push({ r: r, c: c, t: cfg.CHAIN.STEP_DELAY });
+      }
+    }
+  }
+  function updateChains(dt) {
+    if (!chainQuartz.length) { chainPitch = 0; return; }
+    // advance timers; fire every step that matured this frame
+    var firedAny = false;
+    for (var i = chainQuartz.length - 1; i >= 0; i--) {
+      var q = chainQuartz[i];
+      q.t -= dt;
+      if (q.t <= 0) {
+        chainQuartz.splice(i, 1);
+        var t = world.getTile(q.r, q.c);
+        if (t && t.t === T.QUARTZ.id) {
+          chainPitch++;
+          audio.goldClink(Math.min(chainPitch + 4, 24));  // ascending comboPitch
+          var cx = tileWorldX(q.c) + tileSize / 2;
+          var cy = tileWorldY(q.r) + tileSize / 2;
+          emeraldShower(cx, cy, 12);
+          gold += cfg.CHAIN.BONUS_GOLD;                   // instant bonus shimmer
+          addFloater('+' + cfg.CHAIN.BONUS_GOLD + ' CHAIN', '#1B998B');
+          breakTile(q.r, q.c, true);                      // recursive: chains keep chaining
+          firedAny = true;
+        }
+      }
+    }
+    if (!firedAny && !chainQuartz.length) chainPitch = 0;
+  }
+
+  /* ---------- Stage 2: SHOCK DRILL seismic discharge ---------- */
+  function fireShockwave() {
+    var sr = rowAt(saw.y), sc = colAt(saw.x);
+    var rad = cfg.SHOCK.RADIUS_TILES;
+    shockRings.push({ x: saw.x, y: saw.y, t: 0 });       // world-space ring FX
+    audio.boom();
+    shake = Math.min(shake + 5, cfg.FX.MAX_SHAKE);
+    addFloater('SHOCK DISCHARGE', '#D96B43');
+
+    for (var r = sr - Math.ceil(rad); r <= sr + Math.ceil(rad); r++) {
+      for (var c = sc - Math.ceil(rad); c <= sc + Math.ceil(rad); c++) {
+        if (c < 0 || c >= cfg.COLS) continue;
+        var dx = c - sc, dy = r - sr;
+        if (Math.sqrt(dx * dx + dy * dy) > rad) continue;
+        var tile = world.getTile(r, c);
+        if (!tile || tile.t === T.EMPTY.id) continue;
+        if (tile.t === T.TNT.id) {
+          world.setTileEmpty(r, c);
+          tilesCarved++;
+          detonate(r, c);
+        } else if (world.damageTile(tile, cfg.SHOCK.DAMAGE)) {
+          breakTile(r, c, true);
+        } else {
+          // visible chip on survivors
+          var px = tileWorldX(c) + tileSize / 2, py = tileWorldY(r) + tileSize / 2;
+          addParticle(px, py, rand(-60, 60), rand(-100, -30), tileDefById(tile.t).grit, rand(2, 4), 0.3);
+        }
+      }
+    }
+  }
+
+  /* ---------- Stage 2: hazard contact handlers ---------- */
+  function magmaTouch(key) {
+    if (magmaHeatLatch[key]) return;
+    magmaHeatLatch[key] = 1;
+    heat = clamp(heat + cfg.HEAT.MAGMA_TOUCH_HEAT, 0, cfg.HEAT.MAX);
+    addFloater('+' + cfg.HEAT.MAGMA_TOUCH_HEAT + ' HEAT!', '#E63946');
+    audio.uiClick();
+    if (heat >= cfg.HEAT.MAX) { overheatExplode(); }
+  }
+  function spikeHit(row, col) {
+    var key = row + ':' + col;
+    if (spikeLatch[key]) return;          // already bit (or already sliced)
+    spikeLatch[key] = 1;
+    var cx = tileWorldX(col) + tileSize / 2;
+    var cy = tileWorldY(row) + tileSize / 2;
+    if (inRedline()) {
+      // SKILL PLAY: molten blade slices straight through the mine
+      gold += cfg.SPIKE_SKILL_BONUS;
+      addFloater('SKILL! +' + cfg.SPIKE_SKILL_BONUS + 'G', '#F2B705');
+      audio.goldClink(10);
+      emeraldShower(cx, cy, 10);
+      world.setTileEmpty(row, col);
+      tilesCarved++;
+      registerBreak();
+    } else {
+      hp--;
+      shake = cfg.FX.MAX_SHAKE;
+      spikeBoomFX(cx, cy);
+      addFloater('MINE! -1 HULL', '#E63946');
+      audio.overheat();
+      updateHUD(true);
+      if (hp <= 0) gameOver();
+    }
+  }
+  function spikeBoomFX(wx, wy) {
+    for (var i = 0; i < 12; i++) {
+      var a = rand(0, Math.PI * 2), sp = rand(120, 300);
+      addParticle(wx, wy, Math.cos(a) * sp, Math.sin(a) * sp,
+        ['#8A7563', '#D96B43', '#2B211E'][i % 3], rand(2, 5), rand(0.3, 0.6));
     }
   }
 
@@ -419,7 +656,7 @@
 
     /* --- Heat model (first: it gates this frame's damage multipliers) --- */
     if (boost) {
-      heat += cfg.HEAT.BOOST_GAIN * dt;
+      heat += cfg.HEAT.BOOST_GAIN * heatBuildupFactor() * dt;   // RADIATOR slows buildup
     } else {
       heat -= coolingRate() * dt;                    // released -> slow cool
     }
@@ -444,8 +681,9 @@
     var dmg = effectiveDPS() * dmgMult * dt;
 
     contactThisFrame = false;
-    var minR = rowAt(saw.y - saw.r), maxR = rowAt(saw.y + saw.r);
-    var minC = colAt(saw.x - saw.r), maxC = colAt(saw.x + saw.r);
+    var sawR = saw.r * sawRadiusMult();             // blade grows with TEETH tier
+    var minR = rowAt(saw.y - sawR), maxR = rowAt(saw.y + sawR);
+    var minC = colAt(saw.x - sawR), maxC = colAt(saw.x + sawR);
     for (var r = Math.max(0, minR); r <= maxR; r++) {
       for (var c = minC; c <= maxC; c++) {
         if (c < 0 || c >= cfg.COLS) continue;
@@ -456,10 +694,25 @@
         var nx = clamp(saw.x, tx, tx + tileSize);
         var ny = clamp(saw.y, ty, ty + tileSize);
         var ddx = saw.x - nx, ddy = saw.y - ny;
-        if (ddx * ddx + ddy * ddy <= saw.r * saw.r) {
+        if (ddx * ddx + ddy * ddy <= sawR * sawR) {
           contactThisFrame = true;
           var def = tileDefById(tile.t);
           if (def.solid) {
+            /* Stage 2 hazards first: magma bites heat, mines bite hull.
+               A spike mine hit OUTSIDE redline destroys itself and costs HP —
+               it must not be chewed like normal rock. */
+            if (def.name === 'SPIKE_MINE') {
+              spikeHit(r, c);
+              if (!running) return;
+              if (spikeLatch[r + ':' + c] && !inRedline()) {
+                world.setTileEmpty(r, c);   // mine detonates after biting
+                delete spikeLatch[r + ':' + c];
+                tilesCarved++;
+              }
+              continue;
+            }
+            if (def.name === 'MAGMA_ROCK') magmaTouch(r + ':' + c);
+            if (!running) return;
             if (world.damageTile(tile, dmg)) breakTile(r, c, false);
           }
         }
@@ -489,8 +742,33 @@
 
     // Extra friction heat while actually chewing solid rock under overdrive
     if (boost && contactThisFrame) {
-      heat = clamp(heat + cfg.HEAT.CONTACT_GAIN * dt, 0, cfg.HEAT.MAX);
+      heat = clamp(heat + cfg.HEAT.CONTACT_GAIN * heatBuildupFactor() * dt, 0, cfg.HEAT.MAX);
       if (heat >= cfg.HEAT.MAX) { overheatExplode(); if (!running) return; }
+    }
+
+    /* --- Stage 2: SHOCK DRILL passive seismic discharges --- */
+    if (meta.shock > 0) {
+      shockTimer -= dt;
+      if (shockTimer <= 0) {
+        fireShockwave();
+        shockTimer = shockPeriod();
+      }
+    }
+
+    /* --- Stage 2: quartz chain cascade timers --- */
+    updateChains(dt);
+
+    /* --- Stage 2: combo window decay --- */
+    if (comboWindowT > 0) {
+      comboWindowT -= dt;
+      if (comboWindowT <= 0) comboCount = 0;
+    }
+    if (comboBadgeT > 0) comboBadgeT -= dt;
+
+    /* --- Stage 2: shock ring FX aging --- */
+    for (var si = shockRings.length - 1; si >= 0; si--) {
+      shockRings[si].t += dt;
+      if (shockRings[si].t > 0.6) shockRings.splice(si, 1);
     }
 
     /* --- Nuggets: curve upward into the top Gold collector (screen space) --- */
@@ -512,7 +790,7 @@
       n.y += n.vy * dt;
       if (n.y < collectY + 16 && dist < 110) {
         gold += n.v;
-        clinkStep = Math.min(clinkStep + 1, 12);   // rising pitch combo
+        clinkStep = Math.min(clinkStep + 1, 24);   // rising pitch combo
         clinkTimer = 0.12;
         audio.goldClink(n.kind === 'gold' ? clinkStep : 0);
         addFloater('+' + n.v, n.kind === 'gold' ? '#F2B705' : '#BFB4A0');
@@ -584,6 +862,9 @@
     g.save();
     g.translate(sx, sy - camY);
 
+    /* Stage 2: big semi-transparent combo badge BEHIND the tiles */
+    if (comboBadgeT > 0 && comboCount >= 10) drawComboBadge(g);
+
     var r0 = Math.max(0, rowAt(camY) - 1);
     var r1 = rowAt(camY + H) + 1;
     for (var r = r0; r <= r1; r++) {
@@ -594,6 +875,17 @@
         if (!tile || tile.t === T.EMPTY.id) continue;
         drawTile(g, tile, tileWorldX(c), tileWorldY(r));
       }
+    }
+
+    /* Stage 2: expanding seismic shock rings (world space) */
+    for (var ringI = 0; ringI < shockRings.length; ringI++) {
+      var ring = shockRings[ringI];
+      var rp = ring.t / 0.6;
+      g.strokeStyle = 'rgba(217,107,67,' + (0.8 * (1 - rp)) + ')';
+      g.lineWidth = 5 * (1 - rp) + 1;
+      g.beginPath();
+      g.arc(ring.x, ring.y, tileSize * cfg.SHOCK.RADIUS_TILES * rp + 6, 0, Math.PI * 2);
+      g.stroke();
     }
 
     // shaft rails
@@ -726,6 +1018,37 @@
       g.moveTo(cx - 8, cy - 4); g.lineTo(cx + 8, cy + 4);
       g.moveTo(cx - 8, cy + 4); g.lineTo(cx + 8, cy - 4);
       g.stroke();
+    } else if (name === 'MAGMA_ROCK') {
+      /* Stage 2: dark red glowing block with pulsing magma veins */
+      var pulse = 0.5 + 0.5 * Math.sin(performance.now() / 300 + (x + y));
+      g.fillStyle = 'rgba(230,57,70,' + (0.25 + 0.35 * pulse) + ')';
+      g.fillRect(x + pad, y + pad, s, s);
+      g.strokeStyle = '#E63946';
+      g.lineWidth = 2;
+      g.beginPath();
+      g.moveTo(x + 5, y + 6); g.lineTo(cx - 3, cy); g.lineTo(x + 8, y + s - 6);
+      g.moveTo(x + s - 5, y + 8); g.lineTo(cx + 4, cy - 2); g.lineTo(x + s - 9, y + s - 5);
+      g.stroke();
+      g.fillStyle = 'rgba(242,183,5,' + (0.35 + 0.4 * pulse) + ')';
+      g.beginPath(); g.arc(cx, cy, 3 + 2 * pulse, 0, Math.PI * 2); g.fill();
+    } else if (name === 'SPIKE_MINE') {
+      /* Stage 2: metallic mine embedded in rock — brass drum + danger spikes */
+      g.fillStyle = '#8A7563';
+      g.fillRect(x + pad, y + pad, s, s);
+      g.fillStyle = '#2B211E';
+      g.beginPath(); g.arc(cx, cy, s * 0.28, 0, Math.PI * 2); g.fill();
+      g.strokeStyle = '#D96B43';
+      g.lineWidth = 2;
+      for (var sk = 0; sk < 8; sk++) {
+        var sa = sk * Math.PI / 4;
+        g.beginPath();
+        g.moveTo(cx + Math.cos(sa) * s * 0.28, cy + Math.sin(sa) * s * 0.28);
+        g.lineTo(cx + Math.cos(sa) * s * 0.46, cy + Math.sin(sa) * s * 0.46);
+        g.stroke();
+      }
+      var blink = (performance.now() % 800) < 400 ? 1 : 0.3;
+      g.fillStyle = 'rgba(230,57,70,' + blink + ')';
+      g.beginPath(); g.arc(cx, cy, 3, 0, Math.PI * 2); g.fill();
     }
 
     var ratio = tile.hp / tile.maxHp;
@@ -778,26 +1101,36 @@
   function drawRig(g) {
     var aY = saw.y;   // screen-space y of the blade (camera-pinned)
     var molten = inRedline();
+    var tier = sawVisualTier();          // Stage 2: brass -> crimson -> plasma
+    var r = saw.r * sawRadiusMult();     // Stage 2: blade grows with TEETH level
 
     /* Gantry arms */
     g.strokeStyle = '#2B211E';
     g.lineWidth = 6;
     g.beginPath();
-    g.moveTo(saw.x - saw.r - 14, aY - 40); g.lineTo(saw.x - saw.r - 14, aY + 6);
-    g.moveTo(saw.x + saw.r + 14, aY - 40); g.lineTo(saw.x + saw.r + 14, aY + 6);
+    g.moveTo(saw.x - r - 14, aY - 40); g.lineTo(saw.x - r - 14, aY + 6);
+    g.moveTo(saw.x + r + 14, aY - 40); g.lineTo(saw.x + r + 14, aY + 6);
     g.stroke();
     g.fillStyle = '#F2B705';
-    g.fillRect(saw.x - saw.r - 20, aY - 46, saw.r * 2 + 40, 10);
+    g.fillRect(saw.x - r - 20, aY - 46, r * 2 + 40, 10);
     g.strokeStyle = '#2B211E';
     g.lineWidth = 3;
-    g.strokeRect(saw.x - saw.r - 20, aY - 46, saw.r * 2 + 40, 10);
+    g.strokeRect(saw.x - r - 20, aY - 46, r * 2 + 40, 10);
 
     /* Molten glow when hot */
     if (heat > 50 || molten) {
       g.fillStyle = 'rgba(230,57,70,' + (molten ? 0.5 : 0.22) + ')';
       g.beginPath();
-      g.arc(saw.x, aY, saw.r * 1.5, 0, Math.PI * 2);
+      g.arc(saw.x, aY, r * 1.5, 0, Math.PI * 2);
       g.fill();
+    }
+
+    /* Stage 2: plasma rim aura at highest visual tier */
+    if (tier >= 2) {
+      var pl = 0.5 + 0.5 * Math.sin(performance.now() / 90);
+      g.strokeStyle = 'rgba(91,192,190,' + (0.35 + 0.35 * pl) + ')';
+      g.lineWidth = 4;
+      g.beginPath(); g.arc(saw.x, aY, r + 12, 0, Math.PI * 2); g.stroke();
     }
 
     /* Blade */
@@ -805,30 +1138,39 @@
     g.translate(saw.x, aY);
     g.rotate(saw.spin);
 
-    var bladeGrad = g.createRadialGradient(0, 0, saw.r * 0.2, 0, 0, saw.r);
+    var bladeGrad = g.createRadialGradient(0, 0, r * 0.2, 0, 0, r);
     if (molten) {
       bladeGrad.addColorStop(0, '#FFD98A');
       bladeGrad.addColorStop(0.7, '#F2B705');
       bladeGrad.addColorStop(1, '#D96B43');
-    } else {
+    } else if (tier === 2) {           // plasma-rimmed blade
+      bladeGrad.addColorStop(0, '#EDE6DA');
+      bladeGrad.addColorStop(0.7, '#5BC0BE');
+      bladeGrad.addColorStop(1, '#1B998B');
+    } else if (tier === 1) {           // crimson-tinted steel
+      bladeGrad.addColorStop(0, '#F4ECE1');
+      bladeGrad.addColorStop(0.75, '#D96B43');
+      bladeGrad.addColorStop(1, '#E63946');
+    } else {                            // stock brass/steel
       bladeGrad.addColorStop(0, '#EDE6DA');
       bladeGrad.addColorStop(0.75, '#BFB4A0');
       bladeGrad.addColorStop(1, '#8A7563');
     }
     g.fillStyle = bladeGrad;
-    g.beginPath(); g.arc(0, 0, saw.r, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(0, 0, r, 0, Math.PI * 2); g.fill();
     g.strokeStyle = '#2B211E'; g.lineWidth = 3; g.stroke();
 
-    /* Teeth */
-    g.fillStyle = molten ? '#E63946' : '#2B211E';
-    for (var i = 0; i < cfg.SAW.TEETH; i++) {
-      var a = (i / cfg.SAW.TEETH) * Math.PI * 2;
+    /* Teeth — count evolves every 5 SAW TEETH levels */
+    var teeth = sawTeethCount();
+    g.fillStyle = molten ? '#E63946' : (tier >= 1 ? '#D96B43' : '#2B211E');
+    for (var i = 0; i < teeth; i++) {
+      var a = (i / teeth) * Math.PI * 2;
       g.save();
       g.rotate(a);
       g.beginPath();
-      g.moveTo(saw.r - 2, -5);
-      g.lineTo(saw.r + 8, 0);
-      g.lineTo(saw.r - 2, 5);
+      g.moveTo(r - 2, -5);
+      g.lineTo(r + 8, 0);
+      g.lineTo(r - 2, 5);
       g.closePath();
       g.fill();
       g.restore();
@@ -836,15 +1178,45 @@
 
     /* Hub + bolts */
     g.fillStyle = '#2B211E';
-    g.beginPath(); g.arc(0, 0, saw.r * 0.28, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(0, 0, r * 0.28, 0, Math.PI * 2); g.fill();
     g.fillStyle = molten ? '#F2B705' : '#F4ECE1';
     for (var b = 0; b < 4; b++) {
       var ba = b * Math.PI / 2;
       g.beginPath();
-      g.arc(Math.cos(ba) * saw.r * 0.5, Math.sin(ba) * saw.r * 0.5, 3, 0, Math.PI * 2);
+      g.arc(Math.cos(ba) * r * 0.5, Math.sin(ba) * r * 0.5, 3, 0, Math.PI * 2);
       g.fill();
     }
     g.restore();
+  }
+
+  /* Stage 2: big tactile combo badge rendered behind tiles (world layer,
+     but positioned relative to the viewport center) */
+  function drawComboBadge(g) {
+    var cx = W / 2, cy = camY + H * 0.45;
+    var pop = clamp((1.6 - comboBadgeT) * 6, 0, 1);
+    var scale = 0.8 + 0.25 * pop;
+    g.save();
+    g.translate(cx, cy);
+    g.scale(scale, scale);
+    g.globalAlpha = clamp(comboBadgeT * 1.4, 0, 0.55);
+    g.font = '900 ' + Math.floor(W * 0.09) + 'px Arial Black';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.lineWidth = 10;
+    g.strokeStyle = '#2B211E';
+    g.strokeText(comboBadgeText, 0, 0);
+    g.fillStyle = '#F2B705';
+    g.fillText(comboBadgeText, 0, 0);
+    // streak counter chip underneath
+    g.font = '900 ' + Math.floor(W * 0.05) + 'px Arial Black';
+    g.lineWidth = 8;
+    g.strokeStyle = '#2B211E';
+    var chip = 'x' + comboCount + ' STREAK';
+    g.strokeText(chip, 0, Math.floor(W * 0.08));
+    g.fillStyle = '#E63946';
+    g.fillText(chip, 0, Math.floor(W * 0.08));
+    g.restore();
+    g.globalAlpha = 1;
   }
 
   function drawFloaters(g) {

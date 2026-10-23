@@ -39,9 +39,31 @@
   function depthAtRow(row) { return row * cfg.TILE_TO_METERS; }
 
   function mixForDepth(m) {
+    /* Stage 2: hazard mixes. Hazard weights are scaled by depth progression
+       so magma/spikes fade in instead of flooding every row. */
+    if (m >= cfg.SPIKE_DEPTH_M) return hazardMix(cfg.MIX_SPIKE, m, cfg.SPIKE_DEPTH_M);
+    if (m >= cfg.MAGMA_DEPTH_M) return hazardMix(cfg.MIX_MAGMA, m, cfg.MAGMA_DEPTH_M);
     if (m >= cfg.DEEP_DEPTH_M) return cfg.MIX_DEEP;
     if (m >= cfg.MID_DEPTH_M) return cfg.MIX_MID;
     return cfg.MIX_EARLY;
+  }
+
+  var HAZARD_KEYS = ['MAGMA_ROCK', 'SPIKE_MINE'];
+  var _hazardCache = {};
+  function hazardMix(base, m, startDepth) {
+    // ramp factor: 0.45 at the threshold depth -> 1.0 ten "depth units" later
+    var ramp = Math.min(1, 0.45 + (m - startDepth) / (startDepth * 0.6));
+    var key = base === cfg.MIX_SPIKE ? 'S' : 'M';
+    var bk = key + Math.round(ramp * 20);
+    if (_hazardCache[bk]) return _hazardCache[bk];
+    var out = {};
+    for (var k in base) out[k] = base[k];
+    for (var i = 0; i < HAZARD_KEYS.length; i++) {
+      var hk = HAZARD_KEYS[i];
+      if (out[hk] !== undefined) out[hk] = Math.max(0.5, out[hk] * ramp);
+    }
+    _hazardCache[bk] = out;
+    return out;
   }
 
   function makeTile(name) {
@@ -112,7 +134,9 @@
     /* ---- Anti-wall guarantee: never allow a fully solid row where every
        single tile is HARD_ROCK, and ensure at least 2 non-hard tiles per row
        early (< MID depth). Also carve a "drift channel": each row keeps at
-       least one DIRT/CLAY tile adjacent to the previous row's soft column. ---- */
+       least one DIRT/CLAY tile adjacent to the previous row's soft column.
+       Stage 2: hazard tiles (MAGMA/SPIKE) never count as soft fillers and
+       are excluded from safety conversions. ---- */
     var softCount = 0;
     for (c = 0; c < cfg.COLS; c++) {
       if (grid[c].t === T.DIRT.id || grid[c].t === T.CLAY.id) softCount++;
@@ -154,6 +178,30 @@
           if (grid[fix].t !== T.TNT.id && grid[fix].t !== T.ICE.id && grid[fix].t !== T.GOLD.id) {
             grid[fix] = makeTile('DIRT');
           }
+        }
+      }
+    }
+
+    /* ---- Stage 2: deep-drift safety channel. Below MAGMA depth rows can be
+       brutally dense, so always leave ONE non-hazard column aligned with a
+       safe (non-magma/non-spike/non-solid-wall) column above. Losing is still
+       easy — you just can't get geometrically bricked by bad luck. ---- */
+    if (m >= cfg.MAGMA_DEPTH_M && prev) {
+      var hazardOf = function (tt) { return tt === T.MAGMA_ROCK.id || tt === T.SPIKE_MINE.id; };
+      var safeAbove = [];
+      for (c = 0; c < cfg.COLS; c++) {
+        if (!hazardOf(prev[c].t)) safeAbove.push(c);
+      }
+      if (safeAbove.length) {
+        var anchor = safeAbove[randInt(0, safeAbove.length - 1)];
+        var clear = false;
+        for (var w = -1; w <= 1 && !clear; w++) {
+          var wc = anchor + w;
+          if (wc >= 0 && wc < cfg.COLS && !hazardOf(grid[wc].t)) clear = true;
+        }
+        if (!clear) {
+          // soften the anchor cell itself (never onto a hazard, never TNT-adjacent spam)
+          grid[anchor] = makeTile(m > cfg.SPIKE_DEPTH_M + 60 && rng() < 0.3 ? 'HARD_ROCK' : (rng() < 0.5 ? 'CLAY' : 'DIRT'));
         }
       }
     }

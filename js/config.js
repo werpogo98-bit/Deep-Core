@@ -22,15 +22,23 @@ window.CB.config = {
     GOLD:      { id: 4, name: 'GOLD',      hp: 70,  solid: true,  color: '#F2B705', base: '#F2B705', edge: '#B8860B', grit: '#FFF3C4' },
     QUARTZ:    { id: 5, name: 'QUARTZ',    hp: 85,  solid: true,  color: '#E8E2D5', base: '#EDE6DA', edge: '#BFB4A0', grit: '#FFFFFF' },
     TNT:       { id: 6, name: 'TNT',       hp: 20,  solid: true,  color: '#E63946', base: '#E63946', edge: '#2B211E', grit: '#F2B705' },
-    ICE:       { id: 7, name: 'ICE',       hp: 40,  solid: true,  color: '#5BC0BE', base: '#AEE4E2', edge: '#5BC0BE', grit: '#FFFFFF' }
+    ICE:       { id: 7, name: 'ICE',       hp: 40,  solid: true,  color: '#5BC0BE', base: '#AEE4E2', edge: '#5BC0BE', grit: '#FFFFFF' },
+    /* Stage 2 hazards */
+    MAGMA_ROCK: { id: 8,  name: 'MAGMA_ROCK', hp: 130, solid: true, color: '#7A1E12', base: '#5C1810', edge: '#7A1E12', grit: '#E63946' },
+    SPIKE_MINE: { id: 9,  name: 'SPIKE_MINE', hp: 95,  solid: true, color: '#6B5744', base: '#8A7563', edge: '#2B211E', grit: '#D96B43' }
   },
 
   /* ---------- Depth-based spawn weights [minDepth(m), type, weight] ---------- */
   MIX_EARLY:  { DIRT: 62, CLAY: 22, HARD_ROCK: 6, GOLD: 5, QUARTZ: 3, TNT: 1.5, ICE: 0.5 },
   MIX_MID:    { DIRT: 40, CLAY: 26, HARD_ROCK: 15, GOLD: 8, QUARTZ: 5, TNT: 4, ICE: 2 },
   MIX_DEEP:   { DIRT: 24, CLAY: 24, HARD_ROCK: 28, GOLD: 11, QUARTZ: 6, TNT: 4.5, ICE: 2.5 },
+  /* Stage 2: hazard-laced mixes (weights are renormalized at runtime by world.js) */
+  MIX_MAGMA:  { DIRT: 20, CLAY: 20, HARD_ROCK: 26, GOLD: 10, QUARTZ: 8, TNT: 4, ICE: 2.5, MAGMA_ROCK: 6 },
+  MIX_SPIKE:  { DIRT: 16, CLAY: 16, HARD_ROCK: 24, GOLD: 10, QUARTZ: 8, TNT: 4, ICE: 2.5, MAGMA_ROCK: 8, SPIKE_MINE: 5 },
   MID_DEPTH_M: 40,     // switch early -> mid
   DEEP_DEPTH_M: 100,   // switch mid -> deep
+  MAGMA_DEPTH_M: 150,  // Stage 2: magma rocks appear below this depth
+  SPIKE_DEPTH_M: 250,  // Stage 2: spike mines appear below this depth
 
   /* ---------- Veins & features ---------- */
   VEIN: {
@@ -61,15 +69,43 @@ window.CB.config = {
   /* ---------- Heat system ---------- */
   HEAT: {
     MAX: 100,
-    REDLINE_MIN: 75,
+    REDLINE_MIN: 75,          // base zone; RADIATOR widens it to 70%-96%
     REDLINE_MAX: 95,
     BOOST_GAIN: 16,           // heat/sec while overdrive held
     CONTACT_GAIN: 9,          // extra heat/sec while chewing solid tiles in boost
     IDLE_COOL: 7,             // heat/sec cooling when released
-    COOL_UPGRADE_MULT: 0.30,  // +30% cooling per coolant level
+    COOL_UPGRADE_MULT: 0.30,  // legacy suction-style multiplier (kept for saves)
     OVERHEAT_RESET: 30,       // heat resets here on explosion
     OVERHEAT_RADIUS: 1.6,     // tile radii destroyed by overheat blast
-    NUGGET_REDLINE_MULT: 2    // 2x gold nuggets in redline
+    NUGGET_REDLINE_MULT: 2,   // 2x gold nuggets in redline
+    MAGMA_TOUCH_HEAT: 18,     // Stage 2: instant heat from touching magma rock
+    /* Stage 2 — RADIATOR upgrade parameters */
+    RAD_BUILD_REDUCE: 0.12,   // -12% heat buildup per radiator level
+    RAD_ZONE_MIN_L0: 75, RAD_ZONE_MIN_L5: 70,   // redline low end widens at L5+
+    RAD_ZONE_MAX_L0: 95, RAD_ZONE_MAX_L5: 96    // redline high end widens at L5+
+  },
+
+  /* ---------- Stage 2: chain reactions & combo dopamine ---------- */
+  CHAIN: {
+    STEP_DELAY: 0.06,         // seconds between auto-shattered adjacent quartz
+    BONUS_GOLD: 3             // bonus gold showered per chained quartz tile
+  },
+  COMBO: {
+    WINDOW: 1.5,              // seconds a broken tile counts toward the streak
+    TIERS: [                  // threshold -> big center-screen badge text
+      { n: 25,  label: 'CRUSHING!' },
+      { n: 80,  label: 'MEGA EXCAVATION!' },
+      { n: 150, label: 'CORE MELTDOWN!' }
+    ]
+  },
+
+  /* ---------- Stage 2: SHOCK DRILL passive seismic discharges ---------- */
+  SHOCK: {
+    BASE_PERIOD: 6,           // seconds between shockwaves at level 1
+    PERIOD_PER_LEVEL: 0.5,    // each extra level fires 0.5s faster
+    MIN_PERIOD: 3,
+    RADIUS_TILES: 2.5,        // damages all blocks within 2.5 tile radii
+    DAMAGE: 60                // flat damage dealt by the wave
   },
 
   /* ---------- Nuggets / collector ---------- */
@@ -91,13 +127,14 @@ window.CB.config = {
     START_GOLD: 0
   },
 
-  /* ---------- Garage upgrades ---------- */
+  /* ---------- Garage upgrades (Stage 2 economy) ---------- */
   UPGRADES: {
-    dps:     { name: 'SAW TEETH',  baseCost: 15, costMult: 1.6, maxLevel: 8, effect: 0.25 },
-    hull:    { name: 'HULL PLATE', baseCost: 40, costMult: 1.9, maxLevel: 3, effect: 1 },
-    cooling: { name: 'COOLANT',    baseCost: 25, costMult: 1.6, maxLevel: 6, effect: 0.30 },
-    magnet:  { name: 'MAGNET',     baseCost: 20, costMult: 1.55, maxLevel: 6, effect: 0.35 }
+    dps:     { name: 'SAW TEETH',   baseCost: 15, costMult: 1.6, maxLevel: 10, effect: 0.35 }, // +35% DPS/level; visual tier every 5 levels
+    radiator:{ name: 'RADIATOR',    baseCost: 25, costMult: 1.6, maxLevel: 8,  effect: 0.12 }, // widens redline 70-96 @L5+, -12% buildup/level, heals +1 HP
+    vacuum:  { name: 'ORE VACUUM',  baseCost: 20, costMult: 1.55, maxLevel: 8, effect: 0.25 }, // +25% gold value/level, +1 nugget per Gold/Quartz tile
+    shock:   { name: 'SHOCK DRILL', baseCost: 30, costMult: 1.7, maxLevel: 6,  effect: 0.5 }   // passive seismic discharge every ~6s (faster/level)
   },
+  SPIKE_SKILL_BONUS: 25,   // Stage 2: gold awarded for slicing a spike mine in REDLINE
 
   /* ---------- Feel ---------- */
   FX: {

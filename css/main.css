@@ -113,7 +113,7 @@ html, body {
 
 .heat-redline-zone {
   position: absolute;
-  left: 75%; right: 5%;
+  left: var(--rl-min, 75%); right: calc(100% - var(--rl-max, 95%));
   top: 0; bottom: 0;
   background: repeating-linear-gradient(135deg, rgba(230,57,70,0.30) 0 6px, rgba(230,57,70,0.10) 6px 12px);
   border-left: 2px solid var(--crimson);
