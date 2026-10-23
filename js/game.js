@@ -278,6 +278,17 @@
     return T.DIRT;
   }
 
+  /* Эффект разлома: осколки породы разлетаются при каждом ПОРЧЕНОМ (не уничтоженном) блоке */
+  function crackBurst(wx, wy, tileDef, dmgRatio) {
+    var n = 2 + Math.round(clamp(dmgRatio, 0.05, 1) * 4);
+    for (var i = 0; i < n; i++) {
+      var a = rand(-Math.PI, 0); /* преимущественно вверх-в стороны от точки контакта */
+      var sp = rand(40, 160);
+      addParticle(wx, wy, Math.cos(a) * sp, Math.sin(a) * sp - 40,
+        Math.random() < 0.6 ? tileDef.grit : tileDef.edge, rand(1.5, 3.5), rand(0.2, 0.45));
+    }
+  }
+
   function breakTile(row, col, viaExplosion) {
     var tile = world.getTile(row, col);
     if (!tile || tile.t === T.EMPTY.id) return;
@@ -613,7 +624,13 @@
             }
             if (def.name === 'MAGMA_ROCK') magmaTouch(r + ':' + c);
             if (!running) return;
-            if (world.damageTile(tile, dmg)) breakTile(r, c, false);
+            /* Точка контакта пилы с блоком — там сыпятся осколки разлома */
+            var beforeHp = tile.hp;
+            if (world.damageTile(tile, dmg)) {
+              breakTile(r, c, false);
+            } else {
+              crackBurst(nx, ny, def, dmg / Math.max(1, beforeHp));
+            }
           }
         }
       }
@@ -763,6 +780,58 @@
       g.textAlign = 'center'; g.textBaseline = 'middle';
       g.fillText('❄', x + tileSize / 2, y + tileSize / 2);
     }
+
+    /* Трещины разлома: визуальный отклик на полученный урон */
+    var maxHp = tile.maxHp || def.hp || 1;
+    var dmgRatio = clamp(1 - (tile.hp / maxHp), 0, 1);
+    if (dmgRatio > 0.12) {
+      drawCracks(g, x + pad, y + pad, s, dmgRatio);
+    }
+  }
+
+  /* Детерминированные трещины (по позиции блока в сетке), чтобы они не «мерцали» между кадрами */
+  function hashRand(a, b, c) {
+    var h = (a * 73856093) ^ (b * 19349663) ^ (c * 83492791);
+    h = (h >>> 0);
+    return (h % 1000) / 1000;
+  }
+
+  function drawCracks(g, bx, by, s, dmgRatio) {
+    /* Привязка к сетке: одна и та же порода даёт одинаковые трещины */
+    var gc = Math.round((bx - gridOriginX) / tileSize);
+    var gr = Math.round(by / tileSize);
+    var nCracks = dmgRatio > 0.66 ? 3 : (dmgRatio > 0.4 ? 2 : 1);
+    g.save();
+    g.beginPath();
+    g.rect(bx, by, s, s);
+    g.clip();
+    g.strokeStyle = 'rgba(43,33,30,0.85)';
+    g.lineWidth = Math.max(1, s * 0.04);
+    g.lineCap = 'round';
+    for (var i = 0; i < nCracks; i++) {
+      var sxp = bx + s * (0.2 + 0.6 * hashRand(gr, gc, i * 3));
+      var syp = by + s * (0.15 + 0.7 * hashRand(gr, gc, i * 3 + 1));
+      g.beginPath();
+      g.moveTo(sxp, syp);
+      var px = sxp, py = syp;
+      for (var seg = 0; seg < 3; seg++) {
+        px += (hashRand(gr, gc, i * 7 + seg) - 0.5) * s * 0.5 * dmgRatio;
+        py += (hashRand(gr, gc, i * 11 + seg) - 0.2) * s * 0.35 * dmgRatio;
+        g.lineTo(px, py);
+      }
+      g.stroke();
+    }
+    /* Светлый скол вдоль главной трещины при сильном повреждении */
+    if (dmgRatio > 0.5) {
+      g.strokeStyle = 'rgba(255,253,249,0.5)';
+      g.lineWidth = Math.max(1, s * 0.025);
+      g.beginPath();
+      g.moveTo(bx + s * 0.3, by + s * 0.35);
+      g.lineTo(bx + s * 0.55, by + s * 0.6);
+      g.lineTo(bx + s * 0.75, by + s * 0.5);
+      g.stroke();
+    }
+    g.restore();
   }
 
   function drawRig(g) {
