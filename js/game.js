@@ -517,7 +517,16 @@
     heat = clamp(heat, 0, cfg.HEAT.MAX);
     if (heat >= cfg.HEAT.MAX) { overheatExplode(); if (!running) return; }
 
-    /* Горизонтальное руление */
+    var sawR = saw.r * sawRadiusMult();
+    var sawWorldY = camY + saw.y;
+
+    /* ЧЕСТНОЕ ГОРИЗОНТАЛЬНОЕ УПОРЕНИЕ: пила не проходит сквозь боковые стены породы */
+    function solidTileAt(col, row) {
+      if (col < 0 || col >= cfg.COLS) return false;
+      var t = world.getTile(row, col);
+      return !!(t && t.t !== T.EMPTY.id && tileDefById(t.t).solid);
+    }
+
     if (steerTargetX !== null) {
       var err = steerTargetX - saw.x;
       saw.vx += clamp(err * 12, -S.STEER_ACCEL, S.STEER_ACCEL) * dt;
@@ -527,9 +536,47 @@
     saw.x += saw.vx * dt;
     saw.x = clamp(saw.x, gridOriginX + saw.r * 0.5, gridOriginX + tileSize * cfg.COLS - saw.r * 0.5);
 
+    /* Урон за кадр (нужен и для вертикального пропила, и для боковых стен) */
+    var dmgMult = 1;
+    if (boost) dmgMult *= S.BOOST_DMG_MULT;
+    if (inRedline()) dmgMult *= S.REDLINE_DMG_MULT;
+    var dmg = effectiveDPS() * dmgMult * dt;
+
+    var sideRowMin = Math.max(0, rowAt(sawWorldY - sawR));
+    var sideRowMax = rowAt(sawWorldY + sawR);
+    var sideContactCol = null;
+    if (saw.vx > 0) {
+      var rightCol = colAt(saw.x + sawR);
+      for (var rr = sideRowMin; rr <= sideRowMax; rr++) {
+        if (solidTileAt(rightCol, rr)) {
+          saw.x = Math.min(saw.x, tileWorldX(rightCol) - sawR - 1);
+          saw.vx = 0;
+          sideContactCol = rightCol;
+          break;
+        }
+      }
+    } else if (saw.vx < 0) {
+      var leftCol = colAt(saw.x - sawR);
+      for (var rl = sideRowMin; rl <= sideRowMax; rl++) {
+        if (solidTileAt(leftCol, rl)) {
+          saw.x = Math.max(saw.x, tileWorldX(leftCol) + tileSize + sawR + 1);
+          saw.vx = 0;
+          sideContactCol = leftCol;
+          break;
+        }
+      }
+    }
+    /* Стена по бокам тоже пилится (медленнее, x0.55), иначе пила застрянет навсегда */
+    if (sideContactCol !== null) {
+      for (var rs = sideRowMin; rs <= sideRowMax; rs++) {
+        var st = world.getTile(rs, sideContactCol);
+        if (st && st.t !== T.EMPTY.id && tileDefById(st.t).solid) {
+          if (world.damageTile(st, dmg * 0.55)) breakTile(rs, sideContactCol, false);
+        }
+      }
+    }
+
     /* ЧЕСТНАЯ ФИЗИКА УПОРА В ПОРОДУ */
-    var sawR = saw.r * sawRadiusMult();
-    var sawWorldY = camY + saw.y;
     var grav = boost ? S.GRAVITY_BOOST : S.GRAVITY_BASE;
     var nextWorldY = sawWorldY + grav * dt;
 
@@ -589,12 +636,7 @@
     saw.spinSpeed += (targetSpin - saw.spinSpeed) * Math.min(1, dt * 8);
     saw.spin += saw.spinSpeed * dt;
 
-    /* УРОН ПО БЛОКАМ */
-    var dmgMult = 1;
-    if (boost) dmgMult *= S.BOOST_DMG_MULT;
-    if (inRedline()) dmgMult *= S.REDLINE_DMG_MULT;
-    var dmg = effectiveDPS() * dmgMult * dt;
-
+    /* УРОН ПО БЛОКАМ (dmg уже рассчитан выше) */
     var minR = rowAt(sawWorldY - sawR), maxR = rowAt(sawWorldY + sawR);
     var minC = colAt(saw.x - sawR), maxC = colAt(saw.x + sawR);
 
