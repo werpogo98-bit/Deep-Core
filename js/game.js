@@ -520,13 +520,13 @@
     var sawR = saw.r * sawRadiusMult();
     var sawWorldY = camY + saw.y;
 
-    /* ЧЕСТНОЕ ГОРИЗОНТАЛЬНОЕ УПОРЕНИЕ: пила не проходит сквозь боковые стены породы */
-    function solidTileAt(col, row) {
-      if (col < 0 || col >= cfg.COLS) return false;
-      var t = world.getTile(row, col);
-      return !!(t && t.t !== T.EMPTY.id && tileDefById(t.t).solid);
-    }
+    /* Урон за кадр (нужен и для вертикального пропила, и для боковых стен) */
+    var dmgMult = 1;
+    if (boost) dmgMult *= S.BOOST_DMG_MULT;
+    if (inRedline()) dmgMult *= S.REDLINE_DMG_MULT;
+    var dmg = effectiveDPS() * dmgMult * dt;
 
+    /* Руление по горизонтали */
     if (steerTargetX !== null) {
       var err = steerTargetX - saw.x;
       saw.vx += clamp(err * 12, -S.STEER_ACCEL, S.STEER_ACCEL) * dt;
@@ -534,76 +534,133 @@
     saw.vx -= saw.vx * S.STEER_DAMP * dt;
     saw.vx = clamp(saw.vx, -S.MAX_VX, S.MAX_VX);
     saw.x += saw.vx * dt;
-    saw.x = clamp(saw.x, gridOriginX + saw.r * 0.5, gridOriginX + tileSize * cfg.COLS - saw.r * 0.5);
 
-    /* Урон за кадр (нужен и для вертикального пропила, и для боковых стен) */
-    var dmgMult = 1;
-    if (boost) dmgMult *= S.BOOST_DMG_MULT;
-    if (inRedline()) dmgMult *= S.REDLINE_DMG_MULT;
-    var dmg = effectiveDPS() * dmgMult * dt;
-
-    var sideRowMin = Math.max(0, rowAt(sawWorldY - sawR));
-    var sideRowMax = rowAt(sawWorldY + sawR);
-    var sideContactCol = null;
-    if (saw.vx > 0) {
-      var rightCol = colAt(saw.x + sawR);
-      for (var rr = sideRowMin; rr <= sideRowMax; rr++) {
-        if (solidTileAt(rightCol, rr)) {
-          saw.x = Math.min(saw.x, tileWorldX(rightCol) - sawR - 1);
-          saw.vx = 0;
-          sideContactCol = rightCol;
-          break;
-        }
-      }
-    } else if (saw.vx < 0) {
-      var leftCol = colAt(saw.x - sawR);
-      for (var rl = sideRowMin; rl <= sideRowMax; rl++) {
-        if (solidTileAt(leftCol, rl)) {
-          saw.x = Math.max(saw.x, tileWorldX(leftCol) + tileSize + sawR + 1);
-          saw.vx = 0;
-          sideContactCol = leftCol;
-          break;
-        }
-      }
-    }
-    /* Стена по бокам тоже пилится (медленнее, x0.55), иначе пила застрянет навсегда */
-    if (sideContactCol !== null) {
-      for (var rs = sideRowMin; rs <= sideRowMax; rs++) {
-        var st = world.getTile(rs, sideContactCol);
-        if (st && st.t !== T.EMPTY.id && tileDefById(st.t).solid) {
-          if (world.damageTile(st, dmg * 0.55)) breakTile(rs, sideContactCol, false);
+    /* ============================================================
+       ФИЗИКА СТОЛКНОВЕНИЙ ПИЛЫ С ПОРОДОЙ (круг против сетки тайлов).
+       Исправлено: раньше упор проверялся только при saw.vx != 0 и только
+       «под пилой», поэтому при отпускании руления или движении вдоль
+       горизонтального ряда блоков пила свободно проваливалась сквозь них.
+       Теперь каждый кадр:
+         1) движение по X и Y с учётом гравитации;
+         2) полный SAT-подобный разбор пересечений круга со ВСЕМИ твёрдыми
+            блоками вокруг пилы — расталкивание по минимальной оси (X или Y);
+         3) блоки, реально пересекающиеся с кругом, получают урон и трескаются.
+       Пила физически не может ни пройти сквозь целый блок в любом
+       направлении, ни застрять в нём навсегда (всегда режет то, во что уперлась).
+       ============================================================ */
+    function forEachTouchingSolid(fn) {
+      for (var tr = Math.max(0, rowAt(sawWorldY - sawR)); tr <= rowAt(sawWorldY + sawR); tr++) {
+        for (var tc = colAt(saw.x - sawR); tc <= colAt(saw.x + sawR); tc++) {
+          if (tc < 0 || tc >= cfg.COLS) continue;
+          var tt = world.getTile(tr, tc);
+          if (!tt || tt.t === T.EMPTY.id) continue;
+          var tdef = tileDefById(tt.t);
+          if (!tdef.solid) continue;
+          fn(tr, tc, tt, tdef);
         }
       }
     }
 
-    /* ЧЕСТНАЯ ФИЗИКА УПОРА В ПОРОДУ */
+    /* Урон всем блокам, которые реально пересекаются с кругом пилы */
+    function damageTouchingTiles() {
+      forEachTouchingSolid(function (tr, tc, tt, tdef) {
+        if (tdef.name === 'SPIKE_MINE') {
+          spikeHit(tr, tc);
+          if (!running) return;
+          if (spikeLatch[tr + ':' + tc] && !inRedline()) {
+            world.setTileEmpty(tr, tc);
+            delete spikeLatch[tr + ':' + tc];
+            tilesCarved++;
+          }
+          return;
+        }
+        if (tdef.name === 'MAGMA_ROCK') magmaTouch(tr + ':' + tc);
+        if (!running) return;
+        var tx2 = tileWorldX(tc), ty2 = tileWorldY(tr);
+        var nx2 = clamp(saw.x, tx2, tx2 + tileSize);
+        var ny2 = clamp(sawWorldY, ty2, ty2 + tileSize);
+        var dx2 = saw.x - nx2, dy2 = sawWorldY - ny2;
+        if (dx2 * dx2 + dy2 * dy2 > sawR * sawR) return;
+        var beforeHp = tt.hp;
+        if (world.damageTile(tt, dmg)) {
+          breakTile(tr, tc, false);
+        } else {
+          var lostRatioH = 1 - tt.hp / Math.max(1, beforeHp);
+          crackBurst(nx2, ny2, tdef, lostRatioH);
+          tt.vd = Math.min(0.35, (tt.vd || 0) + lostRatioH * 0.22);
+        }
+      });
+    }
+
+    /* Гравитация по вертикали */
     var grav = boost ? S.GRAVITY_BOOST : S.GRAVITY_BASE;
-    var nextWorldY = sawWorldY + grav * dt;
+    sawWorldY += grav * dt;
 
-    var footRow = rowAt(nextWorldY + sawR);
-    var footColMin = Math.max(0, colAt(saw.x - sawR * 0.65));
-    var footColMax = Math.min(cfg.COLS - 1, colAt(saw.x + sawR * 0.65));
-
-    var solidBelow = false;
-    var highestTileTop = Infinity;
-
-    for (var fc = footColMin; fc <= footColMax; fc++) {
-      var underTile = world.getTile(footRow, fc);
-      if (underTile && underTile.t !== T.EMPTY.id && tileDefById(underTile.t).solid) {
-        solidBelow = true;
-        var topY = tileWorldY(footRow);
-        if (topY < highestTileTop) highestTileTop = topY;
+    /* ============================================================
+       ЕДИНОЕ РАЗРЕШЕНИЕ КОЛЛИЗИЙ КРУГА ПИЛЫ С СЕТКОЙ БЛОКОВ (X и Y).
+       Итеративно: каждый проход находим самое глубокое пересечение
+       пилы с ЦЕЛЫМ (не разрушаемым в этом же контакте) блоком и
+       выталкиваем по минимальной оси. Затем режем всё, чего касаемся.
+       За счёт выталкивания по любой оси пила больше НЕ может:
+         - пройти сквозь целый блок сбоку (в т.ч. при vx==0 после
+           отпускания руления — старый баг с горизонтальными рядами);
+         - провалиться сквозь блок сверху/снизу;
+         - застрять навсегда (контактный блок всегда получает урон). */
+    var contactThisFrame = false;
+    var settled0 = false;
+    for (var pass0 = 0; pass0 < cfg.COLS + 6 && !settled0; pass0++) {
+      settled0 = true;
+      var worstPen0 = 0, pushDX0 = 0, pushDY0 = 0;
+      forEachTouchingSolid(function (tr, tc, tt, tdef) {
+        if (tdef.name === 'SPIKE_MINE') return;
+        var tx2 = tileWorldX(tc), ty2 = tileWorldY(tr);
+        var nx2 = clamp(saw.x, tx2, tx2 + tileSize);
+        var ny2 = clamp(sawWorldY, ty2, ty2 + tileSize);
+        var dx2 = saw.x - nx2, dy2 = sawWorldY - ny2;
+        var d2 = dx2 * dx2 + dy2 * dy2;
+        if (d2 > sawR * sawR) return;
+        settled0 = false;
+        var pen, px, py;
+        if (nx2 > tx2 && nx2 < tx2 + tileSize && ny2 > ty2 && ny2 < ty2 + tileSize) {
+          /* Центр пилы внутри блока — выталкиваем к ближайшей грани */
+          var toL = saw.x - tx2, toR = tx2 + tileSize - saw.x;
+          var toU = sawWorldY - ty2, toD = ty2 + tileSize - sawWorldY;
+          var mX = Math.min(toL, toR), mY = Math.min(toU, toD);
+          pen = mX < mY ? mX + sawR : mY + sawR;
+          px = mX < mY ? (toL < toR ? -(toL + sawR) : toR + sawR) : 0;
+          py = mX < mY ? 0 : (toU < toD ? -(toU + sawR) : toD + sawR);
+        } else {
+          /* Касание краем — классический SAT: выталкивание вдоль нормали
+             к ближайшей точке прямоугольника */
+          var dist = Math.sqrt(d2) || 0.0001;
+          pen = sawR - dist;
+          px = -(dx2 / dist) * pen;
+          py = -(dy2 / dist) * pen;
+        }
+        if (pen > worstPen0) { worstPen0 = pen; pushDX0 = px; pushDY0 = py; }
+      });
+      if (!settled0) {
+        /* Пила может стоять НИЖЕ якоря камеры (после отскока завала/шахты).
+           Применяем расталкивание к ЭКРАННОЙ позиции saw.y сразу, чтобы
+           каждый итерационный проход видел актуальные координаты пилы,
+           и синхронно сдвигаем камеру — иначе world-координата пилы
+           искажается на всю глубину расхождения с anchorY. */
+        var newScreenY = sawWorldY + pushDY0 - camY;
+        if (newScreenY > anchorY()) camY += newScreenY - anchorY();
+        saw.y = newScreenY;
+        sawWorldY = camY + saw.y;
+        if (Math.abs(pushDX0) >= Math.abs(pushDY0)) {
+          saw.x += pushDX0;
+          if ((pushDX0 > 0 && saw.vx > 0) || (pushDX0 < 0 && saw.vx < 0)) saw.vx = 0;
+          saw.x = clamp(saw.x, gridOriginX + saw.r * 0.5, gridOriginX + tileSize * cfg.COLS - saw.r * 0.5);
+        }
+        /* Вытолкнули ВВЕРХ — пила стоит на породе (таймер завала) */
+        if (pushDY0 < 0 && Math.abs(pushDY0) >= Math.abs(pushDX0)) contactThisFrame = true;
       }
     }
-
-    if (solidBelow && highestTileTop !== Infinity) {
-      /* Пила уперлась в поверхность блока: она не падает сквозь него! */
-      sawWorldY = Math.min(nextWorldY, highestTileTop - sawR + 2);
-      contactThisFrame = true;
-    } else {
-      sawWorldY = nextWorldY;
-      contactThisFrame = false;
-    }
+    /* Урон всем блокам, которых касается круг пилы (после расталкивания) */
+    damageTouchingTiles();
+    if (!running) return;
 
     /* Проверка таймера завала */
     if (contactThisFrame) {
@@ -635,52 +692,6 @@
     var targetSpin = S.SPIN_BASE * (boost ? S.SPIN_BOOST_MULT : 1) * (inRedline() ? 1.25 : 1);
     saw.spinSpeed += (targetSpin - saw.spinSpeed) * Math.min(1, dt * 8);
     saw.spin += saw.spinSpeed * dt;
-
-    /* УРОН ПО БЛОКАМ (dmg уже рассчитан выше) */
-    var minR = rowAt(sawWorldY - sawR), maxR = rowAt(sawWorldY + sawR);
-    var minC = colAt(saw.x - sawR), maxC = colAt(saw.x + sawR);
-
-    for (var r = Math.max(0, minR); r <= maxR; r++) {
-      for (var c = minC; c <= maxC; c++) {
-        if (c < 0 || c >= cfg.COLS) continue;
-        var tile = world.getTile(r, c);
-        if (!tile || tile.t === T.EMPTY.id) continue;
-
-        var tx = tileWorldX(c), ty = tileWorldY(r);
-        var nx = clamp(saw.x, tx, tx + tileSize);
-        var ny = clamp(sawWorldY, ty, ty + tileSize);
-        var ddx = saw.x - nx, ddy = sawWorldY - ny;
-
-        if (ddx * ddx + ddy * ddy <= sawR * sawR) {
-          var def = tileDefById(tile.t);
-          if (def.solid) {
-            if (def.name === 'SPIKE_MINE') {
-              spikeHit(r, c);
-              if (!running) return;
-              if (spikeLatch[r + ':' + c] && !inRedline()) {
-                world.setTileEmpty(r, c);
-                delete spikeLatch[r + ':' + c];
-                tilesCarved++;
-              }
-              continue;
-            }
-            if (def.name === 'MAGMA_ROCK') magmaTouch(r + ':' + c);
-            if (!running) return;
-            /* Точка контакта пилы с блоком — там сыпятся осколки разлома.
-               Урон копится в world.damageTile (tile.hp), трещины растут постепенно. */
-            var beforeHp = tile.hp;
-            if (world.damageTile(tile, dmg)) {
-              breakTile(r, c, false);
-            } else {
-              var lostRatio = 1 - tile.hp / Math.max(1, beforeHp);
-              crackBurst(nx, ny, def, lostRatio);
-              /* Кумулятивный визуальный отклик: порода темнеет по мере накопления урона */
-              tile.vd = Math.min(0.35, (tile.vd || 0) + lostRatio * 0.22);
-            }
-          }
-        }
-      }
-    }
 
     /* Сейсмо-удар */
     if (meta.shock > 0) {
