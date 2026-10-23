@@ -20,15 +20,17 @@ window.CB.config = {
     CLAY:      { id: 2, name: 'CLAY',      hp: 55,  solid: true,  color: '#D96B43', base: '#D96B43', edge: '#A94E2E', grit: '#7E3A22' },
     HARD_ROCK: { id: 3, name: 'HARD_ROCK', hp: 110, solid: true,  color: '#8A7563', base: '#9C8770', edge: '#6B5744', grit: '#4C3D2E' },
     GOLD:      { id: 4, name: 'GOLD',      hp: 70,  solid: true,  color: '#F2B705', base: '#F2B705', edge: '#B8860B', grit: '#FFF3C4' },
-    QUARTZ:    { id: 5, name: 'QUARTZ',    hp: 85,  solid: true,  color: '#E8E2D5', base: '#EDE6DA', edge: '#BFB4A0', grit: '#FFFFFF' },
+    QUARTZ:    { id: 5, name: 'QUARTZ',    hp: 75,  solid: true,  color: '#1B998B', base: '#1B998B', edge: '#0E6BA8', grit: '#A9E8DF' },
     TNT:       { id: 6, name: 'TNT',       hp: 20,  solid: true,  color: '#E63946', base: '#E63946', edge: '#2B211E', grit: '#F2B705' },
     ICE:       { id: 7, name: 'ICE',       hp: 40,  solid: true,  color: '#5BC0BE', base: '#AEE4E2', edge: '#5BC0BE', grit: '#FFFFFF' },
     /* Stage 2 hazards */
     MAGMA_ROCK: { id: 8,  name: 'MAGMA_ROCK', hp: 130, solid: true, color: '#7A1E12', base: '#5C1810', edge: '#7A1E12', grit: '#E63946' },
     SPIKE_MINE: { id: 9,  name: 'SPIKE_MINE', hp: 95,  solid: true, color: '#6B5744', base: '#8A7563', edge: '#2B211E', grit: '#D96B43' },
     /* Stage 3: boss vault materials */
-    VAULT_PLATE: { id: 10, name: 'VAULT_PLATE', hp: 1500, solid: true, color: '#8A7563', base: '#6B5744', edge: '#2B211E', grit: '#F2B705' },
-    VAULT_CORE:  { id: 11, name: 'VAULT_CORE',  hp: 1500, solid: true, color: '#F2B705', base: '#F2B705', edge: '#D96B43', grit: '#FFF3C4' }
+    /* Stage 3 fix: breach is decided by the Weak Core only. Plates are thin
+       armor (shatter on core breach); core = 4 tiles x 450 HP x hpMult. */
+    VAULT_PLATE: { id: 10, name: 'VAULT_PLATE', hp: 1200, solid: true, color: '#8A7563', base: '#6B5744', edge: '#2B211E', grit: '#F2B705' },
+    VAULT_CORE:  { id: 11, name: 'VAULT_CORE',  hp: 450,  solid: true, color: '#F2B705', base: '#F2B705', edge: '#D96B43', grit: '#FFF3C4' }
   },
 
   /* ---------- Stage 3: biome-specific spawn mixes ---------- */
@@ -137,10 +139,10 @@ window.CB.config = {
 
   /* ---------- Garage upgrades (Stage 2 economy) ---------- */
   UPGRADES: {
-    dps:     { name: 'SAW TEETH',   baseCost: 15, costMult: 1.6, maxLevel: 10, effect: 0.35 }, // +35% DPS/level; visual tier every 5 levels
-    radiator:{ name: 'RADIATOR',    baseCost: 25, costMult: 1.6, maxLevel: 8,  effect: 0.12 }, // widens redline 70-96 @L5+, -12% buildup/level, heals +1 HP
-    vacuum:  { name: 'ORE VACUUM',  baseCost: 20, costMult: 1.55, maxLevel: 8, effect: 0.25 }, // +25% gold value/level, +1 nugget per Gold/Quartz tile
-    shock:   { name: 'SHOCK DRILL', baseCost: 30, costMult: 1.7, maxLevel: 6,  effect: 0.5 }   // passive seismic discharge every ~6s (faster/level)
+    dps:     { name: 'SAW TEETH',   baseCost: 15, costMult: 1.6, maxLevel: 25, effect: 0.35 }, // +35% DPS/level; visual tier every 5 levels
+    radiator:{ name: 'RADIATOR',    baseCost: 25, costMult: 1.6, maxLevel: 15, effect: 0.12 }, // widens redline 70-96 @L5+, -12% buildup/level, heals +1 HP
+    vacuum:  { name: 'ORE VACUUM',  baseCost: 20, costMult: 1.55, maxLevel: 20, effect: 0.25 }, // +25% gold value/level, +1 nugget per Gold/Quartz tile
+    shock:   { name: 'SHOCK DRILL', baseCost: 30, costMult: 1.7, maxLevel: 15, effect: 0.5 }   // passive seismic discharge every ~6s (faster/level)
   },
   SPIKE_SKILL_BONUS: 25,   // Stage 2: gold awarded for slicing a spike mine in REDLINE
 
@@ -168,7 +170,8 @@ window.CB.config = {
     INTERVAL_M: 250,            // gate depth spacing
     THICK_ROWS: 3,              // gate spans 3 rows across all 9 columns
     CORE_SIZE: 2,               // glowing Weak Core is a 2x2 block in the center
-    GATE_HP: 1500,              // per-tile HP of reinforced gate plates
+    PLATE_HP: 1200,             // side armor plates (base, scaled by depth hpMult)
+    CORE_HP: 450,               // Weak Core tiles — breach target (base, scaled)
     TIMER_SECONDS: 12,          // Laser Drill Timer
     REWARD_NUGGETS: 50,         // massive nugget shower on breach
     REWARD_HP: 1,               // +1 Hull HP restored

@@ -168,8 +168,8 @@
     var t = Math.min(1, (l - 4) / 2);
     return cfg.HEAT.RAD_ZONE_MAX_L0 + (cfg.HEAT.RAD_ZONE_MAX_L5 - cfg.HEAT.RAD_ZONE_MAX_L0) * t;
   }
-  function nuggetValue() {             // ORE VACUUM +25%/level
-    return cfg.NUGGET.VALUE * (1 + meta.vacuum * cfg.UPGRADES.vacuum.effect);
+  function nuggetValue() {             // ORE VACUUM +25%/level + depth value ladder
+    return Math.max(1, Math.round((1 + meta.vacuum * 0.35) * (1 + Math.floor(currentDepthM() / 300))));
   }
   function extraNuggets() {            // +1 per broken Gold/Quartz tile
     return meta.vacuum >= 1 ? 1 : 0;
@@ -249,6 +249,10 @@
     gold = cfg.PLAYER.START_GOLD;
     tilesCarved = 0;
     bestDepth = 0;
+    /* Stage 3 fix: every run starts with a clean slate — true roguelike.
+       Persistent meta is NOT reloaded here; upgrades must be earned in-run. */
+    meta = { dps: 0, radiator: 0, vacuum: 0, shock: 0 };
+    refreshShop();
     boost = false; pointerActive = false; steerTargetX = null;
     particles.length = 0; nuggets.length = 0; floaters.length = 0;
     shake = 0; clinkStep = 0; clinkTimer = 0;
@@ -434,8 +438,11 @@
     });
   }
 
-  function addFloater(text, color) {
-    floaters.push({ text: text, c: color, t: 0 });
+  function addFloater(text, color, screenX, screenY) {
+    /* Random spread so stacked floaters don't collapse into one point */
+    var fx = (screenX || W / 2) + rand(-55, 55);
+    var fy = (screenY || H * 0.36) + rand(-20, 20);
+    floaters.push({ text: text, c: color, t: 0, x: fx, y: fy });
   }
 
   function tileDefById(id) {
@@ -513,11 +520,14 @@
       var r = row + dirs[i][0], c = col + dirs[i][1];
       var t = world.getTile(r, c);
       if (t && t.t === T.QUARTZ.id) {
-        // dedupe: same cell may be queued from several sides
+        // dedupe: same cell may be queued from several sides.
+        // FIX: flag-based check — `return` here used to abort the whole loop
+        // and silently drop every remaining neighbor of the vein.
+        var exists = false;
         for (var j = 0; j < chainQuartz.length; j++) {
-          if (chainQuartz[j].r === r && chainQuartz[j].c === c) return;
+          if (chainQuartz[j].r === r && chainQuartz[j].c === c) { exists = true; break; }
         }
-        chainQuartz.push({ r: r, c: c, t: cfg.CHAIN.STEP_DELAY });
+        if (!exists) chainQuartz.push({ r: r, c: c, t: cfg.CHAIN.STEP_DELAY });
       }
     }
   }
@@ -549,9 +559,10 @@
 
   /* ---------- Stage 2: SHOCK DRILL seismic discharge ---------- */
   function fireShockwave() {
-    var sr = rowAt(saw.y), sc = colAt(saw.x);
+    var sawWorldY = camY + saw.y;                     // world-space blade Y
+    var sr = rowAt(sawWorldY), sc = colAt(saw.x);
     var rad = cfg.SHOCK.RADIUS_TILES;
-    shockRings.push({ x: saw.x, y: saw.y, t: 0 });       // world-space ring FX
+    shockRings.push({ x: saw.x, y: sawWorldY, t: 0 }); // world-space ring FX
     audio.boom();
     shake = Math.min(shake + 5, cfg.FX.MAX_SHAKE);
     addFloater('SHOCK DISCHARGE', '#D96B43');
@@ -626,6 +637,7 @@
     if (detonating) return;
     detonating = true;
     audio.boom();
+    haptic('heavy');                        // Telegram rumble on TNT explosions
     shake = Math.min(shake + 10, cfg.FX.MAX_SHAKE);
 
     var queue = [[row, col]];
@@ -674,7 +686,8 @@
     shake = cfg.FX.MAX_SHAKE;
     addFloater('OVERHEAT! -1 HULL', '#E63946');
 
-    var sr = rowAt(saw.y), sc = colAt(saw.x);
+    var sawWorldY = camY + saw.y;                      // world-space blade Y
+    var sr = rowAt(sawWorldY), sc = colAt(saw.x);
     for (var r = sr - 2; r <= sr + 2; r++) {
       for (var c = sc - 2; c <= sc + 2; c++) {
         if (c < 0 || c >= cfg.COLS) continue;
@@ -695,7 +708,7 @@
     }
     for (var i = 0; i < 26; i++) {
       var a = rand(0, Math.PI * 2), sp = rand(100, 420);
-      addParticle(saw.x, saw.y, Math.cos(a) * sp, Math.sin(a) * sp,
+      addParticle(saw.x, sawWorldY, Math.cos(a) * sp, Math.sin(a) * sp,   // world coords
         ['#F2B705', '#D96B43', '#E63946'][i % 3], rand(3, 7), rand(0.4, 0.8));
     }
     updateHUD(true);
@@ -735,7 +748,10 @@
 
     contactThisFrame = false;
     var sawR = saw.r * sawRadiusMult();             // blade grows with TEETH tier
-    var minR = rowAt(saw.y - sawR), maxR = rowAt(saw.y + sawR);
+    /* CRITICAL FIX: saw.y is a SCREEN-space coordinate (pinned to the anchor);
+       every world calculation must use camY + saw.y. */
+    var sawWorldY = camY + saw.y;
+    var minR = rowAt(sawWorldY - sawR), maxR = rowAt(sawWorldY + sawR);
     var minC = colAt(saw.x - sawR), maxC = colAt(saw.x + sawR);
     for (var r = Math.max(0, minR); r <= maxR; r++) {
       for (var c = minC; c <= maxC; c++) {
@@ -745,8 +761,8 @@
         // closest point on tile AABB to circle center
         var tx = tileWorldX(c), ty = tileWorldY(r);
         var nx = clamp(saw.x, tx, tx + tileSize);
-        var ny = clamp(saw.y, ty, ty + tileSize);
-        var ddx = saw.x - nx, ddy = saw.y - ny;
+        var ny = clamp(sawWorldY, ty, ty + tileSize);
+        var ddx = saw.x - nx, ddy = sawWorldY - ny;
         if (ddx * ddx + ddy * ddy <= sawR * sawR) {
           contactThisFrame = true;
           var def = tileDefById(tile.t);
@@ -777,8 +793,9 @@
     // Tiles in contact with the blade resist the descent: chew through them
     // instead of sliding past untouched (prevents "drilling ghosting").
     if (contactThisFrame) {
-      var defC = tileDefById(world.getTile(rowAt(saw.y + saw.r * 0.9), colAt(saw.x)) ?
-        world.getTile(rowAt(saw.y + saw.r * 0.9), colAt(saw.x)).t : T.EMPTY.id);
+      var underRow = rowAt(sawWorldY + sawR * 0.9);   // world space!
+      var underTile = world.getTile(underRow, colAt(saw.x));
+      var defC = tileDefById(underTile ? underTile.t : T.EMPTY.id);
       if (defC.solid) grav *= clamp(60 / Math.max(defC.hp, 20), 0.18, 0.7);
     }
     saw.y += grav * dt;
@@ -849,7 +866,7 @@
       n.x += n.vx * dt;
       n.y += n.vy * dt;
       if (n.y < collectY + 16 && dist < 110) {
-        gold += n.v;
+        gold = Math.round(gold + n.v);     // whole-number economy
         clinkStep = Math.min(clinkStep + 1, 24);   // rising pitch combo
         clinkTimer = 0.12;
         audio.goldClink(n.kind === 'gold' ? clinkStep : 0);
@@ -1352,17 +1369,18 @@
       g.textBaseline = 'middle';
       g.lineWidth = 4;
       g.strokeStyle = '#2B211E';
-      var fy = H * 0.34 - f.t * 40;
-      g.strokeText(f.text, W / 2, fy);
+      var fy = f.y - f.t * 40;               // per-floater spawn Y (with jitter)
+      var fx = f.x != null ? f.x : W / 2;    // per-floater spawn X (with jitter)
+      g.strokeText(f.text, fx, fy);
       g.fillStyle = f.c;
-      g.fillText(f.text, W / 2, fy);
+      g.fillText(f.text, fx, fy);
     }
     g.globalAlpha = 1;
   }
 
   /* ---------- Stage 3 renderers: vault HP bar, laser timer, banners ---------- */
   function drawVaultBar(g, gate) {
-    var total = gateTotalHP();
+    var total = gateTotalHP(gate);
     var rem = clamp(gateRemainingHP(gate), 0, total);
     var bx = gridOriginX + tileSize * 0.5;
     var bw = tileSize * (cfg.COLS - 1);
@@ -1430,19 +1448,27 @@
 
   /* ---------- Stage 3: Boss Vault Gates — timer, breach, fail states ---------- */
   function gateRemainingHP(gate) {
+    /* FIX: breach is decided by the Weak Core ONLY. The side VAULT_PLATE
+       armor is shattered automatically on breach (see breachVault), so it
+       must not count toward the drill target — otherwise 27 tiles x HP made
+       the 12s Laser Drill Timer mathematically impossible. */
     var rem = 0;
     for (var r = gate.topRow; r <= gate.bottomRow; r++) {
       var rowArr = world.getRow(r);
       if (!rowArr) continue;
       for (var c = 0; c < cfg.COLS; c++) {
         var t = rowArr[c];
-        if (t && world.isVaultTile(t)) rem += Math.max(0, t.hp);
+        if (t && t.t === T.VAULT_CORE.id) rem += Math.max(0, t.hp);
       }
     }
     return rem;
   }
 
-  function gateTotalHP() { return cfg.VAULT.GATE_HP * cfg.COLS * cfg.VAULT.THICK_ROWS; }
+  function gateTotalHP(gate) {
+    /* Bar shows just the core pool (4 tiles), scaled with depth like plates */
+    var hpScale = world.hpMultAt(gate.depthM);
+    return cfg.VAULT.CORE_HP * hpScale * cfg.VAULT.CORE_SIZE * cfg.VAULT.CORE_SIZE;
+  }
 
   function checkVaultBreach() {
     if (!vaultActive) return;
@@ -1453,6 +1479,16 @@
     var gate = vaultActive.gate;
     gate.breached = true;
     vaultActive = null;
+    /* FIX: the core is dead — auto-shatter ALL remaining side plates of this
+       gate in a fireworks salute (no ghost armor left in the corridor). */
+    for (var gr = gate.topRow; gr <= gate.bottomRow; gr++) {
+      var gRow = world.getRow(gr);
+      if (!gRow) continue;
+      for (var gc = 0; gc < cfg.COLS; gc++) {
+        var gt = gRow[gc];
+        if (gt && world.isVaultTile(gt)) breakTile(gr, gc, true);
+      }
+    }
     var gTopY = tileWorldY(gate.topRow);
     var gMidX = gridOriginX + tileSize * cfg.COLS / 2;
 
@@ -1465,7 +1501,7 @@
     }
     shake = Math.min(cfg.FX.MAX_SHAKE, cfg.FX.MAX_SHAKE * 0.9);
     audio.boom();
-    haptic('light');
+    haptic('heavy');                        // Telegram rumble on vault breach
     for (var p = 0; p < 26; p++) {
       addParticle(gMidX + rand(-120, 120), gTopY + rand(-20, 60),
         rand(-220, 220), rand(-320, -80),
@@ -1491,7 +1527,7 @@
     /* Activate a timer when the blade reaches an intact gate */
     if (!vaultActive) {
       var sawR = saw.r * sawRadiusMult();
-      var tipRow = rowAt(saw.y + sawR);
+      var tipRow = rowAt(camY + saw.y + sawR);   // world space!
       for (var vi = 0; vi < world.vaults.length; vi++) {
         var gv = world.vaults[vi];
         if (gv.breached) continue;
@@ -1503,6 +1539,16 @@
       }
     }
     if (vaultActive) {
+      /* FIX: hold the rig at gate level until the Weak Core is dead (or the
+         12s timer expires) — otherwise gravity ghosts the blade straight
+         through the breach hole while plates are still standing. */
+      var vGate = vaultActive.gate;
+      var coreRem = gateRemainingHP(vGate);
+      var vSawR = saw.r * sawRadiusMult();
+      var gateFloorWorldY = tileWorldY(vGate.bottomRow + 1);
+      if (coreRem > 0 && camY + saw.y + vSawR * 0.85 > gateFloorWorldY) {
+        saw.y = gateFloorWorldY - vSawR * 0.85 - camY;
+      }
       vaultActive.timer -= dt;
       if (vaultActive.timer <= 3 && !vaultActive.warned) {
         vaultActive.warned = true;

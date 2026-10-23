@@ -181,16 +181,22 @@
     var k = Math.floor(row / perInterval);
     var gateTopRow = vaultTopRow(k * iv);
     var localRow = row - gateTopRow;                      // 0..thick-1
+    /* Stage 3 fix: gate HP scales with depth like everything else.
+       Breach target = the 2x2 Weak Core (4 x CORE_HP x hpMult); plates are
+       thin armor that auto-shatter on breach. */
+    var hpScale = hpMultAt(Math.round(gateTopRow * cfg.TILE_TO_METERS));
+    var plateHP = Math.round(cfg.VAULT.PLATE_HP * hpScale);
+    var coreHP = Math.round(cfg.VAULT.CORE_HP * hpScale);
     var grid = new Array(cfg.COLS);
     for (var c = 0; c < cfg.COLS; c++) {
-      grid[c] = { t: T.VAULT_PLATE.id, hp: cfg.VAULT.GATE_HP, maxHp: cfg.VAULT.GATE_HP };
+      grid[c] = { t: T.VAULT_PLATE.id, hp: plateHP, maxHp: plateHP };
     }
     // Glowing Weak Core: 2x2 in center on the middle band of the gate
     var coreCol = Math.floor(cfg.COLS / 2) - 1; // cols 3-4 of 9
     var midLocal = Math.floor(thick / 2);       // middle row band
     if (localRow === midLocal || localRow === midLocal + 1) {
-      grid[coreCol] = { t: T.VAULT_CORE.id, hp: cfg.VAULT.GATE_HP, maxHp: cfg.VAULT.GATE_HP };
-      grid[coreCol + 1] = { t: T.VAULT_CORE.id, hp: cfg.VAULT.GATE_HP, maxHp: cfg.VAULT.GATE_HP };
+      grid[coreCol] = { t: T.VAULT_CORE.id, hp: coreHP, maxHp: coreHP };
+      grid[coreCol + 1] = { t: T.VAULT_CORE.id, hp: coreHP, maxHp: coreHP };
     }
     pushVaultDescriptor({
       topRow: gateTopRow,
