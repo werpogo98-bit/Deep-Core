@@ -156,21 +156,31 @@
   /* ---------- Stage 3: Boss Vault Gates (every VAULT.INTERVAL_M meters) ---------- */
   var vaults = []; // active gate descriptors for the renderer/timer
 
-  function isVaultRow(m) {
-    var iv = cfg.VAULT.INTERVAL_M;
-    if (m < iv) return false;
-    var phase = m % iv;              // meters into this interval
-    var startM = iv - cfg.VAULT.THICK_ROWS * cfg.TILE_TO_METERS; // last N rows of interval
-    return phase >= startM && phase < iv;
+  /* Stage 3 fix: gates are anchored to exact ROW indices so every vault
+     spawns reliably at its target depth (250m, 500m, 750m, ...). The old
+     meter-modulo check could miss a gate entirely when TILE_TO_METERS did
+     not divide the interval thickness evenly. */
+  function vaultTopRow(ivMeters) {
+    return Math.round(ivMeters / cfg.TILE_TO_METERS);
   }
 
-  function buildVaultGate(row, m) {
+  function isVaultRow(row) {
+    var iv = cfg.VAULT.INTERVAL_M;
+    var perInterval = Math.round(iv / cfg.TILE_TO_METERS); // rows between gates
+    if (row < 6 || row < vaultTopRow(iv)) return false;
+    var k = Math.floor(row / perInterval);
+    if (k < 1) return false;
+    var top = vaultTopRow(k * iv);
+    return row >= top && row <= top + cfg.VAULT.THICK_ROWS - 1;
+  }
+
+  function buildVaultGate(row) {
     var iv = cfg.VAULT.INTERVAL_M;
     var thick = cfg.VAULT.THICK_ROWS;
-    var phase = m % iv;
-    var startM = iv - thick * cfg.TILE_TO_METERS;
-    var localRow = Math.round((phase - startM) / cfg.TILE_TO_METERS); // 0..thick-1
-    var gateTopRow = row - localRow;
+    var perInterval = Math.round(iv / cfg.TILE_TO_METERS);
+    var k = Math.floor(row / perInterval);
+    var gateTopRow = vaultTopRow(k * iv);
+    var localRow = row - gateTopRow;                      // 0..thick-1
     var grid = new Array(cfg.COLS);
     for (var c = 0; c < cfg.COLS; c++) {
       grid[c] = { t: T.VAULT_PLATE.id, hp: cfg.VAULT.GATE_HP, maxHp: cfg.VAULT.GATE_HP };
@@ -182,7 +192,7 @@
       grid[coreCol] = { t: T.VAULT_CORE.id, hp: cfg.VAULT.GATE_HP, maxHp: cfg.VAULT.GATE_HP };
       grid[coreCol + 1] = { t: T.VAULT_CORE.id, hp: cfg.VAULT.GATE_HP, maxHp: cfg.VAULT.GATE_HP };
     }
-    vaults.push({
+    pushVaultDescriptor({
       topRow: gateTopRow,
       bottomRow: gateTopRow + thick - 1,
       coreCol: coreCol,
@@ -193,14 +203,29 @@
     return grid;
   }
 
+  /* Stage 3 fix: one descriptor per gate. buildVaultGate used to push a
+     duplicate entry for every row of the gate (3x per vault), which made
+     the game's "nearest unbreached gate" scan see stale entries after a
+     breach. pushVaultDescriptor() dedupes by topRow. */
+  function findVaultByTop(topRow) {
+    for (var i = 0; i < vaults.length; i++) {
+      if (vaults[i].topRow === topRow) return vaults[i];
+    }
+    return null;
+  }
+
+  function pushVaultDescriptor(desc) {
+    if (!findVaultByTop(desc.topRow)) vaults.push(desc);
+  }
+
   /* ---- Row generation ---- */
   function generateRow(row) {
     var m = depthAtRow(row);
 
     /* Stage 3: reinforced Ancient Vault Gate replaces normal terrain.
        Checked before the anti-wall safety passes so gates stay intact. */
-    if (row >= 6 && isVaultRow(m)) {
-      return buildVaultGate(row, m);
+    if (row >= 6 && isVaultRow(row)) {
+      return buildVaultGate(row);
     }
 
     var mix = mixForDepth(m);
