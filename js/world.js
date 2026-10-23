@@ -38,14 +38,50 @@
 
   function depthAtRow(row) { return row * cfg.TILE_TO_METERS; }
 
+  /* ---------- Stage 3: biome lookup & blending ---------- */
+  function biomeIndexAt(m) {
+    var B = cfg.BIOMES;
+    for (var i = B.length - 1; i >= 0; i--) {
+      if (m >= B[i].minDepth) return i;
+    }
+    return 0;
+  }
+
+  /* Smooth blend factor between biome idx and idx+1 near the boundary. */
+  function biomeBlend(m, idx) {
+    var next = cfg.BIOMES[idx + 1];
+    if (!next) return 0;
+    if (m < next.minDepth) return 0;
+    return Math.min(1, (m - next.minDepth) / cfg.BIOME_BLEND_M);
+  }
+
   function mixForDepth(m) {
-    /* Stage 2: hazard mixes. Hazard weights are scaled by depth progression
-       so magma/spikes fade in instead of flooding every row. */
+    /* Stage 3: biome-driven mixes with smooth late-game scaling. */
+    var idx = biomeIndexAt(m);
+    switch (idx) {
+      case 3: return cfg.MIX_MOLTEN;                       // Molten Core 1000m+
+      case 2: return cfg.MIX_OBSIDIAN;                     // Obsidian Bastion 600-1000m
+      case 1: return cfg.MIX_QUARTZ_CAVES;                 // Emerald Quartz Caverns 250-600m
+      default: break;
+    }
+    /* Canyon (0-250m): legacy stage-2 logic with magma/spike ramp-in */
     if (m >= cfg.SPIKE_DEPTH_M) return hazardMix(cfg.MIX_SPIKE, m, cfg.SPIKE_DEPTH_M);
     if (m >= cfg.MAGMA_DEPTH_M) return hazardMix(cfg.MIX_MAGMA, m, cfg.MAGMA_DEPTH_M);
     if (m >= cfg.DEEP_DEPTH_M) return cfg.MIX_DEEP;
     if (m >= cfg.MID_DEPTH_M) return cfg.MIX_MID;
     return cfg.MIX_EARLY;
+  }
+
+  /* Biome HP multiplier: hardness scales smoothly across biome boundaries. */
+  function hpMultAt(m) {
+    var idx = biomeIndexAt(m);
+    var base = cfg.BIOMES[idx].hpMult;
+    var t = biomeBlend(m, idx);
+    var next = cfg.BIOMES[idx + 1];
+    if (next) base += (next.hpMult - base) * t;
+    /* endless sweat mode: gentle linear creep past 1000m so runs stay hard at 45 min */
+    if (m > 1000) base += Math.min(1.2, (m - 1000) / 1800);
+    return base;
   }
 
   var HAZARD_KEYS = ['MAGMA_ROCK', 'SPIKE_MINE'];
@@ -71,8 +107,17 @@
     return { t: def.id, hp: def.hp, maxHp: def.hp };
   }
 
+  /* Stage 3: biome-scaled tile factory (HP & hardness progression). */
+  function makeTileScaled(name, m) {
+    var def = T[name];
+    var mult = hpMultAt(m);
+    var hp = Math.round(def.hp * mult);
+    if (name === 'HARD_ROCK') hp += cfg.BIOMES[biomeIndexAt(m)].hardBonus;
+    return { t: def.id, hp: hp, maxHp: hp };
+  }
+
   function isSolid(tile) {
-    return tile && tile.t !== T.EMPTY.id;
+    return !!tile && tile.t !== T.EMPTY.id;
   }
 
   /* ---------- Feature passers ---------- */
@@ -108,14 +153,61 @@
     if (rng() < 0.6 && col + 1 < cfg.COLS) grid[col + 1] = makeTile('ICE');
   }
 
-  /* ---------- Row generation ---------- */
+  /* ---------- Stage 3: Boss Vault Gates (every VAULT.INTERVAL_M meters) ---------- */
+  var vaults = []; // active gate descriptors for the renderer/timer
+
+  function isVaultRow(m) {
+    var iv = cfg.VAULT.INTERVAL_M;
+    if (m < iv) return false;
+    var phase = m % iv;              // meters into this interval
+    var startM = iv - cfg.VAULT.THICK_ROWS * cfg.TILE_TO_METERS; // last N rows of interval
+    return phase >= startM && phase < iv;
+  }
+
+  function buildVaultGate(row, m) {
+    var iv = cfg.VAULT.INTERVAL_M;
+    var thick = cfg.VAULT.THICK_ROWS;
+    var phase = m % iv;
+    var startM = iv - thick * cfg.TILE_TO_METERS;
+    var localRow = Math.round((phase - startM) / cfg.TILE_TO_METERS); // 0..thick-1
+    var gateTopRow = row - localRow;
+    var grid = new Array(cfg.COLS);
+    for (var c = 0; c < cfg.COLS; c++) {
+      grid[c] = { t: T.VAULT_PLATE.id, hp: cfg.VAULT.GATE_HP, maxHp: cfg.VAULT.GATE_HP };
+    }
+    // Glowing Weak Core: 2x2 in center on the middle band of the gate
+    var coreCol = Math.floor(cfg.COLS / 2) - 1; // cols 3-4 of 9
+    var midLocal = Math.floor(thick / 2);       // middle row band
+    if (localRow === midLocal || localRow === midLocal + 1) {
+      grid[coreCol] = { t: T.VAULT_CORE.id, hp: cfg.VAULT.GATE_HP, maxHp: cfg.VAULT.GATE_HP };
+      grid[coreCol + 1] = { t: T.VAULT_CORE.id, hp: cfg.VAULT.GATE_HP, maxHp: cfg.VAULT.GATE_HP };
+    }
+    vaults.push({
+      topRow: gateTopRow,
+      bottomRow: gateTopRow + thick - 1,
+      coreCol: coreCol,
+      coreRow: gateTopRow + midLocal,
+      depthM: Math.round(gateTopRow * cfg.TILE_TO_METERS),
+      breached: false
+    });
+    return grid;
+  }
+
+  /* ---- Row generation ---- */
   function generateRow(row) {
     var m = depthAtRow(row);
+
+    /* Stage 3: reinforced Ancient Vault Gate replaces normal terrain.
+       Checked before the anti-wall safety passes so gates stay intact. */
+    if (row >= 6 && isVaultRow(m)) {
+      return buildVaultGate(row, m);
+    }
+
     var mix = mixForDepth(m);
     var grid = new Array(cfg.COLS);
 
     for (var c = 0; c < cfg.COLS; c++) {
-      grid[c] = makeTile(pickWeighted(mix));
+      grid[c] = makeTileScaled(pickWeighted(mix), m);
     }
 
     // Surface apron: first two rows are soft dirt, no hazards
@@ -125,10 +217,11 @@
 
     // Features (skip near-surface rows so early game is fair)
     if (row >= 3) {
+      var qChance = biomeIndexAt(m) === 1 ? 0.34 : cfg.VEIN.QUARTZ_CHANCE; // dense branching veins in caverns
       if (rng() < cfg.VEIN.GOLD_CHANCE) stampGoldVein(grid, row);
-      if (rng() < cfg.VEIN.QUARTZ_CHANCE) stampQuartzCluster(grid, row);
-      if (rng() < cfg.VEIN.TNT_CHANCE) stampTNTcrate(grid);
-      if (rng() < cfg.VEIN.ICE_CHANCE) stampIcePocket(grid);
+      if (rng() < qChance) stampQuartzCluster(grid, row);
+      if (rng() < cfg.VEIN.TNT_CHANCE * (biomeIndexAt(m) === 0 ? 1.6 : 1)) stampTNTcrate(grid);
+      if (rng() < cfg.VEIN.ICE_CHANCE * (biomeIndexAt(m) === 0 ? 1.8 : 1)) stampIcePocket(grid);
     }
 
     /* ---- Anti-wall guarantee: never allow a fully solid row where every
@@ -254,6 +347,7 @@
   function reset(newSeed) {
     rows.clear();
     generatedUpTo = -1;
+    vaults.length = 0;
     if (typeof newSeed === 'number') seed = newSeed >>> 0;
     else seed = (Math.random() * 0xffffffff) >>> 0;
     ensureRows(4);
@@ -269,6 +363,14 @@
     prune: prune,
     isSolid: isSolid,
     depthAtRow: depthAtRow,
+    /* Stage 3 API */
+    biomeIndexAt: biomeIndexAt,
+    biomeBlend: biomeBlend,
+    hpMultAt: hpMultAt,
+    vaults: vaults,
+    isVaultTile: function (tile) {
+      return !!tile && (tile.t === T.VAULT_PLATE.id || tile.t === T.VAULT_CORE.id);
+    },
     generatedThrough: function () { return generatedUpTo; }
   };
 })();

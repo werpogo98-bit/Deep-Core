@@ -56,6 +56,48 @@
 
   var meta = loadMeta();        // garage levels persist between runs
 
+  /* ---------- Stage 3 state: biomes, vaults, milestones, haptics ---------- */
+  var vaultActive = null;       // gate currently being drilled {gate, timer}
+  var nextVaultCheckRow = 0;    // row at which the next gate top sits
+  var lastMilestone = 0;        // last announced depth milestone (m)
+  var bannerT = 0;              // big banner visibility timer
+  var bannerText = '';
+  var bannerColor = '#F2B705';
+  var tw = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+  if (tw) { try { tw.ready(); } catch (e) {} }
+
+  function haptic(kind) {        // Telegram HapticFeedback with safe fallback
+    if (!tw || !tw.HapticFeedback) return;
+    try {
+      if (kind === 'heavy') tw.HapticFeedback.impactOccurred('heavy');
+      else if (kind === 'light') tw.HapticFeedback.notificationOccurred('success');
+      else tw.HapticFeedback.impactOccurred('medium');
+    } catch (e) {}
+  }
+
+  /* hex -> [r,g,b] */
+  function hexRGB(hex) {
+    var v = parseInt(hex.slice(1), 16);
+    return [(v >> 16) & 255, (v >> 8) & 255, v & 255];
+  }
+  function mixHex(a, b, t) {
+    var ca = hexRGB(a), cb = hexRGB(b);
+    var r = Math.round(ca[0] + (cb[0] - ca[0]) * t);
+    var gg = Math.round(ca[1] + (cb[1] - ca[1]) * t);
+    var bb = Math.round(ca[2] + (cb[2] - ca[2]) * t);
+    return 'rgb(' + r + ',' + gg + ',' + bb + ')';
+  }
+  /* Biome tint of the current view center — smooth crossfade near boundaries */
+  function biomeTintNow() {
+    var m = currentDepthM() + (H / tileSize) * cfg.TILE_TO_METERS * 0.5;
+    var idx = world.biomeIndexAt(m);
+    var B = cfg.BIOMES;
+    var t = world.biomeBlend(m, idx);
+    var a = B[idx].tint;
+    var b = B[idx + 1] ? B[idx + 1].tint : a;
+    return { main: mixHex(a, b, t), deep: mixHex('#E5D5C3', '#D9C4AE', clamp((m - 250) / 900, 0, 1)) };
+  }
+
   /* ---------- Entities ---------- */
   var particles = [];           // world space
   var nuggets = [];             // spawn in world space, fly in screen space
@@ -216,6 +258,8 @@
     shockTimer = shockPeriod();         // first discharge after one full period
     shockRings.length = 0;
     magmaHeatLatch = {}; spikeLatch = {};
+    /* Stage 3 resets */
+    vaultActive = null; lastMilestone = 0; bannerT = 0; bannerText = '';
     elBoostHint.classList.remove('hidden');
     updateHUD(true);
   }
@@ -236,6 +280,7 @@
     audio.stopHum();
     var best = loadBest();
     if (bestDepth > best) { best = bestDepth; saveBest(best); }
+    saveHighScore(gold);                  // Stage 3: persist high score (gold)
     statDepth.textContent = Math.floor(bestDepth) + 'm';
     statGold.textContent = gold;
     statTiles.textContent = tilesCarved;
@@ -407,6 +452,11 @@
     tilesCarved++;
     delete magmaHeatLatch[row + ':' + col];   // Stage 2: latch dies with the tile
 
+    /* Stage 3: vault gate bookkeeping — HP bar & breach detection */
+    if (def.name === 'VAULT_PLATE' || def.name === 'VAULT_CORE') {
+      checkVaultBreach();
+    }
+
     var cx = tileWorldX(col) + tileSize / 2;
     var cy = tileWorldY(row) + tileSize / 2;
 
@@ -426,6 +476,7 @@
          0.06s cascade with ascending pitch + bonus gold shower. */
       startQuartzChain(row, col);
     } else if (def.name === 'TNT') {
+      haptic('heavy');                        // Stage 3: Telegram rumble on TNT
       detonate(row, col);
     } else if (def.name === 'ICE') {
       heat = clamp(heat - 35, 0, cfg.HEAT.MAX);
@@ -619,6 +670,7 @@
     hp--;
     heat = cfg.HEAT.OVERHEAT_RESET;
     audio.overheat();
+    haptic('heavy');                        // Stage 3: overheat warning rumble
     shake = cfg.FX.MAX_SHAKE;
     addFloater('OVERHEAT! -1 HULL', '#E63946');
 
@@ -655,8 +707,9 @@
     var S = cfg.SAW;
 
     /* --- Heat model (first: it gates this frame's damage multipliers) --- */
+    var biomeHeatMult = world.biomeIndexAt(currentDepthM()) === 3 ? cfg.CORE_HEAT_GAIN_MULT : 1; // Molten Core: fast buildup
     if (boost) {
-      heat += cfg.HEAT.BOOST_GAIN * heatBuildupFactor() * dt;   // RADIATOR slows buildup
+      heat += cfg.HEAT.BOOST_GAIN * heatBuildupFactor() * biomeHeatMult * dt;   // RADIATOR slows buildup
     } else {
       heat -= coolingRate() * dt;                    // released -> slow cool
     }
@@ -758,6 +811,13 @@
     /* --- Stage 2: quartz chain cascade timers --- */
     updateChains(dt);
 
+    /* --- Stage 3: boss vault gate timer & breach checks --- */
+    updateVault(dt);
+
+    /* --- Stage 3: depth milestone banners --- */
+    checkMilestones();
+    if (bannerT > 0) bannerT -= dt;
+
     /* --- Stage 2: combo window decay --- */
     if (comboWindowT > 0) {
       comboWindowT -= dt;
@@ -850,8 +910,10 @@
     g.clearRect(0, 0, W, H);
 
     var skyGrad = g.createLinearGradient(0, 0, 0, H);
-    skyGrad.addColorStop(0, '#F4ECE1');
-    skyGrad.addColorStop(1, '#E5D5C3');
+    /* Stage 3: biome background tint — smooth crossfade by depth */
+    var bt = biomeTintNow();
+    skyGrad.addColorStop(0, bt.main);
+    skyGrad.addColorStop(1, bt.deep);
     g.fillStyle = skyGrad;
     g.fillRect(0, 0, W, H);
 
@@ -874,6 +936,14 @@
         var tile = rowArr[c];
         if (!tile || tile.t === T.EMPTY.id) continue;
         drawTile(g, tile, tileWorldX(c), tileWorldY(r));
+      }
+    }
+
+    /* Stage 3: giant HP bar across the active boss vault gate */
+    for (var gi = 0; gi < world.vaults.length; gi++) {
+      var gvt = world.vaults[gi];
+      if (!gvt.breached && gvt.bottomRow >= r0 - 1 && gvt.topRow <= r1 + 1) {
+        drawVaultBar(g, gvt);
       }
     }
 
@@ -938,6 +1008,11 @@
 
     drawRig(g);
     drawFloaters(g);
+
+    /* Stage 3: Laser Drill Timer + milestone/breach banners (screen layer) */
+    if (vaultActive) drawVaultTimer(g);
+    if (bannerT > 0) drawBanner(g);
+
     g.restore();
 
     /* ---- Redline vignette ---- */
@@ -1049,6 +1124,37 @@
       var blink = (performance.now() % 800) < 400 ? 1 : 0.3;
       g.fillStyle = 'rgba(230,57,70,' + blink + ')';
       g.beginPath(); g.arc(cx, cy, 3, 0, Math.PI * 2); g.fill();
+    } else if (name === 'VAULT_PLATE') {
+      /* Stage 3: reinforced ancient gate plate — espresso steel with brass rivets */
+      g.fillStyle = '#6B5744';
+      g.fillRect(x + pad, y + pad, s, s);
+      g.fillStyle = 'rgba(242,183,5,0.85)';
+      var rv = Math.max(3, Math.floor(s * 0.12));
+      g.fillRect(x + pad + 4, y + pad + 4, rv, rv);
+      g.fillRect(x + pad + s - 4 - rv, y + pad + 4, rv, rv);
+      g.fillRect(x + pad + 4, y + pad + s - 4 - rv, rv, rv);
+      g.fillRect(x + pad + s - 4 - rv, y + pad + s - 4 - rv, rv, rv);
+      g.strokeStyle = 'rgba(43,33,30,0.6)';
+      g.lineWidth = 3;
+      g.beginPath();
+      g.moveTo(x + pad + 6, cy); g.lineTo(x + pad + s - 6, cy);
+      g.stroke();
+    } else if (name === 'VAULT_CORE') {
+      /* Stage 3: glowing Weak Core — pulsing brass/terracotta heart of the gate */
+      var cpul = 0.5 + 0.5 * Math.sin(performance.now() / 180);
+      g.fillStyle = mixHex('#F2B705', '#FF4E00', cpul);
+      g.fillRect(x + pad, y + pad, s, s);
+      g.fillStyle = 'rgba(255,253,249,' + (0.35 + 0.4 * cpul) + ')';
+      g.beginPath(); g.arc(cx, cy, s * 0.3 + 3 * cpul, 0, Math.PI * 2); g.fill();
+      g.strokeStyle = '#2B211E';
+      g.lineWidth = 3;
+      g.beginPath(); g.arc(cx, cy, s * 0.3 + 3 * cpul, 0, Math.PI * 2); g.stroke();
+      g.strokeStyle = 'rgba(43,33,30,0.85)';
+      g.lineWidth = 2;
+      g.beginPath();
+      g.moveTo(cx, y + pad + 3); g.lineTo(cx, y + pad + s - 3);
+      g.moveTo(x + pad + 3, cy); g.lineTo(x + pad + s - 3, cy);
+      g.stroke();
     }
 
     var ratio = tile.hp / tile.maxHp;
@@ -1176,6 +1282,24 @@
       g.restore();
     }
 
+    /* Stage 3: motion-blur spinning teeth ring — Steel -> Brass -> Molten
+       White-Orange as heat rises. Arcs trail opposite the spin direction. */
+    var blurColor;
+    if (heat > 75)      blurColor = mixHex('#F2B705', '#FF4E00', clamp((heat - 75) / 25, 0, 1));
+    else if (heat > 35) blurColor = mixHex('#2B211E', '#F2B705', clamp((heat - 35) / 40, 0, 1));
+    else                blurColor = '#2B211E';
+    var blurAlpha = clamp(0.12 + (saw.spinSpeed / 30) * 0.5 + (boost ? 0.2 : 0), 0.1, 0.85);
+    g.strokeStyle = blurColor;
+    g.globalAlpha = blurAlpha;
+    g.lineWidth = 5;
+    for (var bl = 0; bl < 4; bl++) {
+      var bStart = -saw.spin * (1.6 + bl * 0.35) + bl * 1.1;
+      g.beginPath();
+      g.arc(0, 0, r + 4 + bl * 3, bStart, bStart + 1.2 + bl * 0.2);
+      g.stroke();
+    }
+    g.globalAlpha = 1;
+
     /* Hub + bolts */
     g.fillStyle = '#2B211E';
     g.beginPath(); g.arc(0, 0, r * 0.28, 0, Math.PI * 2); g.fill();
@@ -1234,6 +1358,194 @@
       g.fillText(f.text, W / 2, fy);
     }
     g.globalAlpha = 1;
+  }
+
+  /* ---------- Stage 3 renderers: vault HP bar, laser timer, banners ---------- */
+  function drawVaultBar(g, gate) {
+    var total = gateTotalHP();
+    var rem = clamp(gateRemainingHP(gate), 0, total);
+    var bx = gridOriginX + tileSize * 0.5;
+    var bw = tileSize * (cfg.COLS - 1);
+    var by = tileWorldY(gate.topRow) - 26;
+    g.fillStyle = '#2B211E';
+    g.fillRect(bx - 4, by - 4, bw + 8, 20);
+    g.fillStyle = '#FFFDF9';
+    g.fillRect(bx, by, bw, 12);
+    var frac = rem / total;
+    g.fillStyle = frac > 0.5 ? '#D96B43' : (frac > 0.2 ? '#F2B705' : '#E63946');
+    g.fillRect(bx, by, bw * frac, 12);
+    g.font = '900 11px Arial Black';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillStyle = '#2B211E';
+    g.fillText('ANCIENT VAULT GATE — ' + gate.depthM + 'm', bx + bw / 2, by - 12);
+  }
+
+  function drawVaultTimer(g) {
+    var t = Math.max(0, vaultActive.timer);
+    var frac = t / cfg.VAULT.TIMER_SECONDS;
+    var cxp = W / 2, cyp = H * 0.62;
+    var urgent = t <= 3;
+    g.save();
+    if (urgent) g.translate(rand(-2, 2), rand(-2, 2));   // nervous jitter
+    g.fillStyle = '#2B211E';
+    g.fillRect(cxp - 92, cyp - 26, 184, 52);
+    g.fillStyle = '#FFFDF9';
+    g.fillRect(cxp - 88, cyp - 22, 176, 44);
+    g.font = '900 12px Arial Black';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillStyle = urgent ? '#E63946' : '#2B211E';
+    g.fillText('LASER DRILL TIMER', cxp, cyp - 12);
+    g.font = '900 22px Arial Black';
+    g.fillStyle = urgent ? '#E63946' : '#1B998B';
+    g.fillText(t.toFixed(1) + 's', cxp, cyp + 8);
+    // countdown strip
+    g.fillStyle = '#E5D5C3';
+    g.fillRect(cxp - 84, cyp + 20, 168, 4);
+    g.fillStyle = urgent ? '#E63946' : '#F2B705';
+    g.fillRect(cxp - 84, cyp + 20, 168 * frac, 4);
+    g.restore();
+  }
+
+  function drawBanner(g) {
+    var pop = clamp((2.2 - bannerT) * 5, 0, 1);
+    var scale = 0.85 + 0.15 * pop;
+    var alpha = clamp(bannerT * 1.2, 0, 1);
+    g.save();
+    g.translate(W / 2, H * 0.28);
+    g.scale(scale, scale);
+    g.globalAlpha = alpha;
+    g.font = '900 ' + Math.floor(W * 0.075) + 'px Arial Black';
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.lineWidth = 9;
+    g.strokeStyle = '#2B211E';
+    g.strokeText(bannerText, 0, 0);
+    g.fillStyle = bannerColor;
+    g.fillText(bannerText, 0, 0);
+    g.restore();
+    g.globalAlpha = 1;
+  }
+
+  /* ---------- Stage 3: Boss Vault Gates — timer, breach, fail states ---------- */
+  function gateRemainingHP(gate) {
+    var rem = 0;
+    for (var r = gate.topRow; r <= gate.bottomRow; r++) {
+      var rowArr = world.getRow(r);
+      if (!rowArr) continue;
+      for (var c = 0; c < cfg.COLS; c++) {
+        var t = rowArr[c];
+        if (t && world.isVaultTile(t)) rem += Math.max(0, t.hp);
+      }
+    }
+    return rem;
+  }
+
+  function gateTotalHP() { return cfg.VAULT.GATE_HP * cfg.COLS * cfg.VAULT.THICK_ROWS; }
+
+  function checkVaultBreach() {
+    if (!vaultActive) return;
+    if (gateRemainingHP(vaultActive.gate) <= 0) breachVault(true);
+  }
+
+  function breachVault(onTime) {
+    var gate = vaultActive.gate;
+    gate.breached = true;
+    vaultActive = null;
+    var gTopY = tileWorldY(gate.topRow);
+    var gMidX = gridOriginX + tileSize * cfg.COLS / 2;
+
+    /* Massive explosion of 50+ gold nuggets across the shattered gate */
+    var nCount = cfg.VAULT.REWARD_NUGGETS + 4;
+    for (var i = 0; i < nCount; i++) {
+      spawnNugget(gMidX + rand(-tileSize * 4, tileSize * 4),
+                  gTopY + rand(0, tileSize * cfg.VAULT.THICK_ROWS),
+                  nuggetValue(), 'gold');
+    }
+    shake = Math.min(cfg.FX.MAX_SHAKE, cfg.FX.MAX_SHAKE * 0.9);
+    audio.boom();
+    haptic('light');
+    for (var p = 0; p < 26; p++) {
+      addParticle(gMidX + rand(-120, 120), gTopY + rand(-20, 60),
+        rand(-220, 220), rand(-320, -80),
+        Math.random() < 0.6 ? '#F2B705' : '#D96B43', rand(3, 7), rand(0.4, 0.9));
+    }
+
+    if (onTime) {
+      showBanner('VAULT BREACHED!', '#1B998B');
+      addFloater('+' + nCount + ' GOLD', '#F2B705');
+      if (hp < maxHp) { hp++; updateHUD(true); addFloater('+1 HULL HP', '#E63946'); }
+    } else {
+      /* Timer expired: gate still breaks, but the defense laser bites 1 HP */
+      showBanner('GATE LASER HIT! -1 HULL', '#E63946');
+      hp -= cfg.VAULT.FAIL_HP_DAMAGE;
+      heat = clamp(heat + 20, 0, cfg.HEAT.MAX);
+      haptic('heavy');
+      updateHUD(true);
+      if (hp <= 0) { gameOver(); }
+    }
+  }
+
+  function updateVault(dt) {
+    /* Activate a timer when the blade reaches an intact gate */
+    if (!vaultActive) {
+      var sawR = saw.r * sawRadiusMult();
+      var tipRow = rowAt(saw.y + sawR);
+      for (var vi = 0; vi < world.vaults.length; vi++) {
+        var gv = world.vaults[vi];
+        if (gv.breached) continue;
+        if (tipRow >= gv.topRow && tipRow <= gv.bottomRow + 1) {
+          vaultActive = { gate: gv, timer: cfg.VAULT.TIMER_SECONDS };
+          showBanner('ANCIENT VAULT GATE — DRILL!', '#F2B705');
+          break;
+        }
+      }
+    }
+    if (vaultActive) {
+      vaultActive.timer -= dt;
+      if (vaultActive.timer <= 3 && !vaultActive.warned) {
+        vaultActive.warned = true;
+        haptic('medium');                     // overheat-style warning rumble
+      }
+      if (vaultActive && vaultActive.timer <= 0) {
+        /* Force-shatter every remaining gate tile, then apply the penalty */
+        var gate = vaultActive.gate;
+        for (var r = gate.topRow; r <= gate.bottomRow; r++) {
+          for (var c = 0; c < cfg.COLS; c++) {
+            var tl = world.getTile(r, c);
+            if (tl && world.isVaultTile(tl)) breakTile(r, c, true);
+          }
+        }
+        if (vaultActive) breachVault(false);
+      }
+    }
+  }
+
+  /* ---------- Stage 3: milestone banners & high score ---------- */
+  function showBanner(text, color) {
+    bannerText = text; bannerColor = color || '#F2B705'; bannerT = 2.2;
+  }
+
+  function checkMilestones() {
+    var d = Math.floor(currentDepthM());
+    var step = cfg.MILESTONE_STEP_M;
+    var ms = Math.floor(d / step) * step;
+    if (ms > lastMilestone && d >= ms) {
+      lastMilestone = ms;
+      showBanner(ms + 'm REACHED!', '#D96B43');
+      var bi = world.biomeIndexAt(d);
+      if (bi > 0 && Math.abs(d - cfg.BIOMES[bi].minDepth) < 15) {
+        showBanner(cfg.BIOMES[bi].name, '#1B998B');
+      }
+    }
+  }
+
+  function loadHighScore() {
+    try { return parseFloat(localStorage.getItem(cfg.HIGHSCORE_KEY)) || 0; } catch (e) { return 0; }
+  }
+  function saveHighScore(g) {
+    try { if (g > loadHighScore()) localStorage.setItem(cfg.HIGHSCORE_KEY, String(Math.floor(g))); } catch (e) {}
   }
 
   /* ================= Main loop ================= */

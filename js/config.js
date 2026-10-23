@@ -25,8 +25,16 @@ window.CB.config = {
     ICE:       { id: 7, name: 'ICE',       hp: 40,  solid: true,  color: '#5BC0BE', base: '#AEE4E2', edge: '#5BC0BE', grit: '#FFFFFF' },
     /* Stage 2 hazards */
     MAGMA_ROCK: { id: 8,  name: 'MAGMA_ROCK', hp: 130, solid: true, color: '#7A1E12', base: '#5C1810', edge: '#7A1E12', grit: '#E63946' },
-    SPIKE_MINE: { id: 9,  name: 'SPIKE_MINE', hp: 95,  solid: true, color: '#6B5744', base: '#8A7563', edge: '#2B211E', grit: '#D96B43' }
+    SPIKE_MINE: { id: 9,  name: 'SPIKE_MINE', hp: 95,  solid: true, color: '#6B5744', base: '#8A7563', edge: '#2B211E', grit: '#D96B43' },
+    /* Stage 3: boss vault materials */
+    VAULT_PLATE: { id: 10, name: 'VAULT_PLATE', hp: 1500, solid: true, color: '#8A7563', base: '#6B5744', edge: '#2B211E', grit: '#F2B705' },
+    VAULT_CORE:  { id: 11, name: 'VAULT_CORE',  hp: 1500, solid: true, color: '#F2B705', base: '#F2B705', edge: '#D96B43', grit: '#FFF3C4' }
   },
+
+  /* ---------- Stage 3: biome-specific spawn mixes ---------- */
+  MIX_QUARTZ_CAVES: { DIRT: 26, CLAY: 20, HARD_ROCK: 18, GOLD: 7, QUARTZ: 18, TNT: 4, ICE: 3, MAGMA_ROCK: 4 },
+  MIX_OBSIDIAN:     { DIRT: 14, CLAY: 14, HARD_ROCK: 40, GOLD: 9, QUARTZ: 8, TNT: 6.5, ICE: 4, MAGMA_ROCK: 5, SPIKE_MINE: 4 },
+  MIX_MOLTEN:       { DIRT: 8, CLAY: 10, HARD_ROCK: 34, GOLD: 16, QUARTZ: 8, TNT: 5, ICE: 6, MAGMA_ROCK: 12, SPIKE_MINE: 6 },
 
   /* ---------- Depth-based spawn weights [minDepth(m), type, weight] ---------- */
   MIX_EARLY:  { DIRT: 62, CLAY: 22, HARD_ROCK: 6, GOLD: 5, QUARTZ: 3, TNT: 1.5, ICE: 0.5 },
@@ -144,6 +152,32 @@ window.CB.config = {
     MAX_PARTICLES: 320,
     HITSTOP_ON_BREAK: 0.0
   },
+
+  /* ---------- Stage 3: Geological biomes (visual + balance progression) ---------- */
+  BIOMES: [
+    { name: 'SUNBAKED CANYON',     minDepth: 0,    tint: '#F4ECE1', hpMult: 1.0,  hardBonus: 0 },
+    { name: 'EMERALD QUARTZ CAVERNS', minDepth: 250, tint: '#E8F0E8', hpMult: 1.35, hardBonus: 15 },
+    { name: 'OBSIDIAN BASTION',    minDepth: 600,  tint: '#DFD9D2', hpMult: 1.8,  hardBonus: 40 },
+    { name: 'THE MOLTEN CORE',     minDepth: 1000, tint: '#F7E3D4', hpMult: 2.6,  hardBonus: 80 }
+  ],
+  BIOME_BLEND_M: 60,            // meters over which palettes/hardness crossfade
+  CORE_HEAT_GAIN_MULT: 1.45,    // Molten Core: fast heat buildup (constant name kept short)
+
+  /* ---------- Stage 3: Boss Vault Gates every 250 m ---------- */
+  VAULT: {
+    INTERVAL_M: 250,            // gate depth spacing
+    THICK_ROWS: 3,              // gate spans 3 rows across all 9 columns
+    CORE_SIZE: 2,               // glowing Weak Core is a 2x2 block in the center
+    GATE_HP: 1500,              // per-tile HP of reinforced gate plates
+    TIMER_SECONDS: 12,          // Laser Drill Timer
+    REWARD_NUGGETS: 50,         // massive nugget shower on breach
+    REWARD_HP: 1,               // +1 Hull HP restored
+    FAIL_HP_DAMAGE: 1           // timer expiry still breaks the gate but costs 1 HP
+  },
+
+  /* ---------- Stage 3: Milestones & persistence ---------- */
+  MILESTONE_STEP_M: 250,        // floating "500m REACHED!" banners
+  HIGHSCORE_KEY: 'cb_high_score',
 
   /* ---------- Persistence keys ---------- */
   STORAGE: {
