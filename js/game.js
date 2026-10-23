@@ -16,7 +16,7 @@
   /* ---------- DOM ---------- */
   var canvas, ctx2d, stageEl;
   var elDepth, elGold, elHearts, elHeatBar, elHeatFill, elRedTag;
-  var elModalOver, elModalStart, elBoostHint;
+  var elModalOver, elModalStart, elBoostHint, elStall;
   var statDepth, statGold, statTiles, statBest;
   var shopBtns = {};
 
@@ -57,6 +57,8 @@
   var meta = loadMeta();        // garage levels persist between runs
 
   /* ---------- Stage 3 state: biomes, vaults, milestones, haptics ---------- */
+  var lastDepthForStall = 0;
+  var stallTimer = 0;
   var vaultActive = null;       // gate currently being drilled {gate, timer}
   var nextVaultCheckRow = 0;    // row at which the next gate top sits
   var lastMilestone = 0;        // last announced depth milestone (m)
@@ -264,6 +266,8 @@
     magmaHeatLatch = {}; spikeLatch = {};
     /* Stage 3 resets */
     vaultActive = null; lastMilestone = 0; bannerT = 0; bannerText = '';
+    stallTimer = 0; lastDepthForStall = currentDepthM();
+    if (elStall) elStall.classList.remove('show');
     elBoostHint.classList.remove('hidden');
     updateHUD(true);
   }
@@ -285,10 +289,10 @@
     var best = loadBest();
     if (bestDepth > best) { best = bestDepth; saveBest(best); }
     saveHighScore(gold);                  // Stage 3: persist high score (gold)
-    statDepth.textContent = Math.floor(bestDepth) + 'm';
+    statDepth.textContent = Math.floor(bestDepth) + '\u043c';
     statGold.textContent = gold;
     statTiles.textContent = tilesCarved;
-    statBest.textContent = Math.floor(best) + 'm';
+    statBest.textContent = Math.floor(best) + '\u043c';
     elModalOver.classList.remove('hidden');
   }
 
@@ -301,7 +305,7 @@
   function updateHUD(forceHearts) {
     var depthM = Math.floor(currentDepthM());
     if (depthM > bestDepth) bestDepth = depthM;
-    elDepth.textContent = depthM + 'm';
+    elDepth.textContent = depthM + '\u043c';
     elGold.textContent = gold;
 
     if (forceHearts) {
@@ -903,6 +907,17 @@
 
     /* --- Audio hum follows effort --- */
     audio.setHumIntensity(contactThisFrame ? 1 : 0.35, boost);
+
+    /* --- Stall warning: rig stuck and not digging (collapses if idle too long) --- */
+    var dNow = currentDepthM();
+    if (dNow - lastDepthForStall > 0.4) {
+      lastDepthForStall = dNow;
+      stallTimer = 0;
+      if (elStall) elStall.classList.remove('show');
+    } else {
+      stallTimer += dt;
+      if (elStall) elStall.classList.toggle('show', stallTimer > 3.5);
+    }
 
     updateHUD(false);
   }
@@ -1624,6 +1639,7 @@
     elModalOver = document.getElementById('modal-runover');
     elModalStart = document.getElementById('modal-start');
     elBoostHint = document.getElementById('boost-hint');
+    elStall = document.getElementById('stall-warning');
     statDepth = document.getElementById('stat-depth');
     statGold = document.getElementById('stat-gold');
     statTiles = document.getElementById('stat-tiles');
@@ -1638,11 +1654,14 @@
       btn.addEventListener('click', function () { audio.resume(); buyUpgrade(key); });
     });
 
-    document.getElementById('btn-mute').addEventListener('click', function () {
-      var m = audio.toggleMute();
-      this.classList.toggle('off', m);
-      if (!m && running) { audio.resume(); audio.startHum(); }
-    });
+    var muteBtn = document.getElementById('btn-mute');
+    if (muteBtn) {
+      muteBtn.addEventListener('click', function () {
+        var m = audio.toggleMute();
+        this.classList.toggle('off', m);
+        if (!m && running) { audio.resume(); audio.startHum(); }
+      });
+    }
 
     document.getElementById('btn-start').addEventListener('click', startGame);
     document.getElementById('btn-restart').addEventListener('click', startGame);

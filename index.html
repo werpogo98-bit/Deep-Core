@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ru">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
@@ -9,110 +9,88 @@
 </head>
 <body>
 <div id="app">
-
-  <!-- ============ TOP INDUSTRIAL HUD ============ -->
+  <!-- ВЕРХНИЙ ПРИБОРНЫЙ ЩИТОК -->
   <header id="hud">
     <div class="hud-row">
-      <div class="hud-cell hud-label">DEPTH</div>
-      <div class="hud-cell hud-value" id="hud-depth">0m</div>
-      <div class="hud-cell hud-sep"></div>
-      <div class="hud-cell hud-label">GOLD</div>
-      <div class="hud-cell hud-value gold-value" id="hud-gold">0</div>
-      <div class="hud-cell hud-sep"></div>
-      <div class="hud-cell hud-label">HULL</div>
-      <div class="hud-cell hearts" id="hud-hearts">&#9829;&#9829;&#9829;</div>
+      <div class="hud-pill"><span class="hud-lbl">ГЛУБИНА</span><span class="hud-val" id="hud-depth">0м</span></div>
+      <div class="hud-pill gold"><span class="hud-lbl">ЗОЛОТО</span><span class="hud-val gold-val" id="hud-gold">0</span></div>
+      <div class="hud-pill"><span class="hud-lbl">ПРОЧНОСТЬ</span><span class="hearts" id="hud-hearts">♥♥♥</span></div>
     </div>
     <div class="hud-row heat-row">
-      <div class="hud-cell hud-label">HEAT</div>
-      <div class="hud-cell heat-wrap">
+      <div class="hud-lbl">НАГРЕВ</div>
+      <div class="heat-wrap">
         <div class="heat-bar" id="heat-bar">
           <div class="heat-redline-zone"></div>
           <div class="heat-fill" id="heat-fill"></div>
         </div>
       </div>
-      <div class="hud-cell redline-tag" id="redline-tag">REDLINE &times;3</div>
+      <div class="redline-badge" id="redline-tag">ТУРБО ×3</div>
     </div>
   </header>
 
-  <!-- ============ GAME CANVAS ============ -->
+  <!-- ИГРОВОЙ ХОЛСТ -->
   <main id="stage">
     <canvas id="game"></canvas>
-    <div id="boost-hint">HOLD TO BOOST &middot; DRAG TO STEER</div>
+    <div id="stall-warning">⚠️ ОПАСНОСТЬ ЗАВАЛА: БУРИ БЫСТРЕЕ!</div>
+    <div id="boost-hint">ЗАЖИМАЙ ДЛЯ ТУРБО · ТЯНИ ДЛЯ РУЛЕНИЯ</div>
   </main>
 
-  <!-- ============ BOTTOM GARAGE SHOP ============ -->
+  <!-- НИЖНИЙ АНГАР УЛУЧШЕНИЙ -->
   <footer id="garage">
-    <div class="garage-title">
-      <span>&#9881; GARAGE UPGRADES</span>
-      <button id="btn-mute" class="mute-btn" title="Toggle sound">&#9834;</button>
-    </div>
     <div class="shop-grid">
       <button class="shop-btn" data-upgrade="dps">
-        <span class="shop-btn-name">&#9881; SAW TEETH</span>
-        <span class="shop-btn-desc">+35% DPS</span>
-        <span class="shop-btn-cost" id="cost-dps">15g</span>
+        <span class="shop-btn-name">⚙️ ЗУБЬЯ ПИЛЫ</span>
+        <span class="shop-btn-desc">+35% УРОН</span>
+        <span class="shop-btn-cost" id="cost-dps">15</span>
       </button>
       <button class="shop-btn" data-upgrade="radiator">
-        <span class="shop-btn-name">&#10052; RADIATOR</span>
-        <span class="shop-btn-desc">-12% Heat &middot; Heal</span>
-        <span class="shop-btn-cost" id="cost-radiator">25g</span>
+        <span class="shop-btn-name">❄️ РАДИАТОР</span>
+        <span class="shop-btn-desc">-12% НАГРЕВ</span>
+        <span class="shop-btn-cost" id="cost-radiator">25</span>
       </button>
       <button class="shop-btn" data-upgrade="vacuum">
-        <span class="shop-btn-name">&#129522; ORE VACUUM</span>
-        <span class="shop-btn-desc">+25% Gold Value</span>
-        <span class="shop-btn-cost" id="cost-vacuum">20g</span>
+        <span class="shop-btn-name">🧲 ВАКУУМ-РУДЫ</span>
+        <span class="shop-btn-desc">+25% ЦЕННОСТЬ</span>
+        <span class="shop-btn-cost" id="cost-vacuum">20</span>
       </button>
       <button class="shop-btn" data-upgrade="shock">
-        <span class="shop-btn-name">&#129508; SHOCK DRILL</span>
-        <span class="shop-btn-desc">Passive Discharge</span>
-        <span class="shop-btn-cost" id="cost-shock">30g</span>
+        <span class="shop-btn-name">💣 СЕЙСМО-УДАР</span>
+        <span class="shop-btn-desc">ВЗРЫВ ВОЛНОЙ</span>
+        <span class="shop-btn-cost" id="cost-shock">30</span>
       </button>
     </div>
   </footer>
 
-  <!-- ============ RUN OVER MODAL ============ -->
+  <!-- ЭКРАН ПОРАЖЕНИЯ -->
   <div id="modal-runover" class="modal hidden">
     <div class="modal-card">
-      <div class="modal-kicker">RIG DESTROYED</div>
-      <h2 class="modal-title">RUN OVER</h2>
+      <div class="modal-kicker">БУР РАЗБИТ</div>
+      <h2 class="modal-title">ЗАБЕГ ОКОНЧЕН</h2>
       <div class="stats-grid">
-        <div class="stat-box">
-          <div class="stat-label">FINAL DEPTH</div>
-          <div class="stat-value" id="stat-depth">0m</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-label">GOLD MINED</div>
-          <div class="stat-value gold-text" id="stat-gold">0</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-label">TILES CARVED</div>
-          <div class="stat-value" id="stat-tiles">0</div>
-        </div>
-        <div class="stat-box">
-          <div class="stat-label">BEST DEPTH</div>
-          <div class="stat-value brass-text" id="stat-best">0m</div>
-        </div>
+        <div class="stat-box"><div class="stat-label">ГЛУБИНА</div><div class="stat-value" id="stat-depth">0м</div></div>
+        <div class="stat-box"><div class="stat-label">ЗОЛОТО</div><div class="stat-value" style="color:#B8860B" id="stat-gold">0</div></div>
+        <div class="stat-box"><div class="stat-label">БЛОКОВ СЛОМАНО</div><div class="stat-value" id="stat-tiles">0</div></div>
+        <div class="stat-box"><div class="stat-label">РЕКОРД ГЛУБИНЫ</div><div class="stat-value" id="stat-best">0м</div></div>
       </div>
-      <button id="btn-restart" class="big-btn">DROP NEW RIG &#9660;</button>
+      <button id="btn-restart" class="big-btn">НОВЫЙ ЗАБЕГ ▼</button>
     </div>
   </div>
 
-  <!-- ============ START SCREEN ============ -->
+  <!-- СТАРТОВЫЙ ЭКРАН -->
   <div id="modal-start" class="modal">
     <div class="modal-card">
       <div class="modal-kicker">TELEGRAM MINI APP</div>
       <h1 class="game-logo">CRUST<span>BREAKER</span></h1>
-      <div class="game-sub">DEEP CORE &mdash; OVERDRIVE EDITION</div>
+      <div class="game-sub">ГЛУБОКИЙ БУР — OVERDRIVE EDITION</div>
       <ul class="how-list">
-        <li><b>DRAG</b> left / right to steer the gyro-saw</li>
-        <li><b>HOLD</b> to engage OVERDRIVE (faster, hotter)</li>
-        <li>Keep heat in <b class="crimson-text">REDLINE 75&ndash;95</b> for &times;3 damage &amp; 2&times; gold</li>
-        <li>Hit <b class="jade-text">ICE</b> pockets to vent heat. Avoid <b class="brass-text">TNT</b>... or don't.</li>
+        <li>👉 <b>ТЯНИ</b> влево / вправо для руления</li>
+        <li>🔥 <b>ЗАЖИМАЙ</b> для включения ТУРБО-бура</li>
+        <li>⚡ Держи нагрев в <b>ЗОНЕ ТУРБО (75–95%)</b>: урон ×3 и золото ×2!</li>
+        <li>🧊 Собирай <b>ЛЕД</b> для охлаждения. Не застревай, иначе <b>ЗАВАЛИТ</b>!</li>
       </ul>
-      <button id="btn-start" class="big-btn">START DRILLING &#9660;</button>
+      <button id="btn-start" class="big-btn">НАЧАТЬ БУРЕНИЕ ▼</button>
     </div>
   </div>
-
 </div>
 
 <script src="js/config.js"></script>
