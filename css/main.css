@@ -80,13 +80,13 @@ html, body {
 }
 
 .hud-lbl {
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.5px;
   color: rgba(43,33,30,0.65);
 }
 
 .hud-val {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 900;
   font-variant-numeric: tabular-nums;
 }
@@ -123,8 +123,8 @@ html, body {
 
 .heat-redline-zone {
   position: absolute;
-  left: 75%;
-  width: 20%;
+  left: var(--rl-min, 75%);
+  width: calc(var(--rl-max, 95%) - var(--rl-min, 75%));
   top: 0;
   bottom: 0;
   background: repeating-linear-gradient(135deg, rgba(230,57,70,0.3) 0 4px, rgba(230,57,70,0.1) 4px 8px);
@@ -242,7 +242,7 @@ html, body {
   flex-direction: column;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 2px 4px;
+  padding: 6px 4px;
   background: var(--parchment);
   border: 2px solid var(--espresso);
   border-radius: 8px;
@@ -251,7 +251,7 @@ html, body {
   color: var(--espresso);
   font-family: inherit;
   transition: transform 0.06s, box-shadow 0.06s;
-  min-height: 52px;
+  min-height: 60px;
 }
 
 .shop-btn:active {
@@ -260,27 +260,34 @@ html, body {
 }
 
 .shop-btn-name {
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 900;
   text-align: center;
   line-height: 1.1;
 }
 
 .shop-btn-desc {
-  font-size: 7px;
+  font-size: 9px;
+  font-weight: 700;
   color: rgba(43,33,30,0.6);
   text-align: center;
 }
 
+.shop-btn-lvl {
+  font-size: 9px;
+  color: var(--terracotta);
+  font-weight: 900;
+}
+
 .shop-btn-cost {
   margin-top: 2px;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 900;
   color: #B8860B;
   background: #FBF3D9;
   border: 1px solid var(--espresso);
   border-radius: 4px;
-  padding: 1px 4px;
+  padding: 2px 6px;
 }
 
 .shop-btn.affordable {
@@ -416,4 +423,29 @@ html, body {
 .big-btn:active {
   transform: translateY(3px);
   box-shadow: 0 1px 0 var(--espresso);
+}
+
+/* Кнопка отключения звука в шапке HUD */
+.mute-btn {
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--espresso);
+  border-radius: 6px;
+  background: var(--parchment);
+  box-shadow: 0 2px 0 var(--espresso);
+  cursor: pointer;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  line-height: 1;
+  flex-shrink: 0;
+  align-self: center;
+  margin-left: auto;
+}
+
+.mute-btn:active {
+  transform: translateY(2px);
+  box-shadow: 0 0 0 var(--espresso);
 }
