@@ -93,10 +93,10 @@ window.CB.config = {
   PLAYER: { START_HP: 3, MAX_HP_CAP: 6, START_GOLD: 0 },
 
   UPGRADES: {
-    dps:     { name: 'ЗУБЬЯ ПИЛЫ',   baseCost: 15, costMult: 1.5,  maxLevel: 25, effect: 0.35 },
-    radiator:{ name: 'РАДИАТОР',    baseCost: 25, costMult: 1.55, maxLevel: 15, effect: 0.12 },
-    vacuum:  { name: 'ВАКУУМ-РУДЫ', baseCost: 20, costMult: 1.5,  maxLevel: 20, effect: 0.25 },
-    shock:   { name: 'СЕЙСМО-УДАР', baseCost: 30, costMult: 1.6,  maxLevel: 15, effect: 0.5 }
+    dps:     { name: 'ЗУБЬЯ ПИЛЫ',   baseCost: 12, costMult: 1.32, maxLevel: 40, effect: 0.35 },
+    radiator:{ name: 'РАДИАТОР',    baseCost: 20, costMult: 1.38, maxLevel: 20, effect: 0.12 },
+    vacuum:  { name: 'ВАКУУМ-РУДЫ', baseCost: 16, costMult: 1.34, maxLevel: 30, effect: 0.30 },
+    shock:   { name: 'СЕЙСМО-УДАР', baseCost: 25, costMult: 1.40, maxLevel: 20, effect: 0.5 }
   },
 
   SPIKE_SKILL_BONUS: 25,

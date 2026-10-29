@@ -79,8 +79,10 @@
     var t = biomeBlend(m, idx);
     var next = cfg.BIOMES[idx + 1];
     if (next) base += (next.hpMult - base) * t;
-    /* endless sweat mode: gentle linear creep past 1000m so runs stay hard at 45 min */
-    if (m > 1000) base += Math.min(1.2, (m - 1000) / 1800);
+    /* Endless progression past 1000m: NO ceiling. Every additional 250 m
+       below 1000 m adds +0.45 to the rock HP multiplier, so by minute
+       30-45 of a run serious upgrades are mandatory to keep drilling. */
+    if (m > 1000) base += ((m - 1000) / 250) * 0.45;
     return base;
   }
 
@@ -121,36 +123,47 @@
   }
 
   /* ---------- Feature passers ---------- */
-  function stampGoldVein(grid, row) {
-    var len = randInt(cfg.VEIN.GOLD_LEN_MIN, cfg.VEIN.GOLD_LEN_MAX);
-    var col = randInt(0, cfg.COLS - len);
-    for (var i = 0; i < len; i++) grid[col + i] = makeTile('GOLD');
+  /* Balance fix: features are depth-scaled via makeTileScaled so ore/TNT/ice
+     HP grows with the biome instead of keeping starting 25-50 HP at 500-1500m.
+     The first two surface rows (row <= 1) keep plain makeTile for fair start. */
+  function featMaker(row, m) {
+    if (row <= 1) return makeTile;
+    return function (name) { return makeTileScaled(name, m); };
   }
 
-  function stampQuartzCluster(grid, row) {
+  function stampGoldVein(grid, row, m) {
+    var len = randInt(cfg.VEIN.GOLD_LEN_MIN, cfg.VEIN.GOLD_LEN_MAX);
+    var col = randInt(0, cfg.COLS - len);
+    var mk = featMaker(row, m);
+    for (var i = 0; i < len; i++) grid[col + i] = mk('GOLD');
+  }
+
+  function stampQuartzCluster(grid, row, m) {
     var size = randInt(cfg.VEIN.QUARTZ_SIZE_MIN, cfg.VEIN.QUARTZ_SIZE_MAX);
     var col = randInt(1, cfg.COLS - 2);
-    grid[col] = makeTile('QUARTZ');
+    var mk = featMaker(row, m);
+    grid[col] = mk('QUARTZ');
     var placed = 1;
     // grow horizontally with occasional vertical bleed into next row handled simply here
     while (placed < size) {
       var dir = rng() < 0.5 ? -1 : 1;
       var nc = col + dir * placed;
       if (nc < 0 || nc >= cfg.COLS) break;
-      grid[nc] = makeTile('QUARTZ');
+      grid[nc] = mk('QUARTZ');
       placed++;
     }
   }
 
-  function stampTNTcrate(grid) {
+  function stampTNTcrate(grid, row, m) {
     var col = randInt(0, cfg.COLS - 1);
-    grid[col] = makeTile('TNT');
+    grid[col] = featMaker(row, m)('TNT');
   }
 
-  function stampIcePocket(grid) {
+  function stampIcePocket(grid, row, m) {
     var col = randInt(0, cfg.COLS - 2);
-    grid[col] = makeTile('ICE');
-    if (rng() < 0.6 && col + 1 < cfg.COLS) grid[col + 1] = makeTile('ICE');
+    var mk = featMaker(row, m);
+    grid[col] = mk('ICE');
+    if (rng() < 0.6 && col + 1 < cfg.COLS) grid[col + 1] = mk('ICE');
   }
 
   /* ---------- Stage 3: Boss Vault Gates (every VAULT.INTERVAL_M meters) ---------- */
@@ -249,10 +262,10 @@
     // Features (skip near-surface rows so early game is fair)
     if (row >= 3) {
       var qChance = biomeIndexAt(m) === 1 ? 0.34 : cfg.VEIN.QUARTZ_CHANCE; // dense branching veins in caverns
-      if (rng() < cfg.VEIN.GOLD_CHANCE) stampGoldVein(grid, row);
-      if (rng() < qChance) stampQuartzCluster(grid, row);
-      if (rng() < cfg.VEIN.TNT_CHANCE * (biomeIndexAt(m) === 0 ? 1.6 : 1)) stampTNTcrate(grid);
-      if (rng() < cfg.VEIN.ICE_CHANCE * (biomeIndexAt(m) === 0 ? 1.8 : 1)) stampIcePocket(grid);
+      if (rng() < cfg.VEIN.GOLD_CHANCE) stampGoldVein(grid, row, m);
+      if (rng() < qChance) stampQuartzCluster(grid, row, m);
+      if (rng() < cfg.VEIN.TNT_CHANCE * (biomeIndexAt(m) === 0 ? 1.6 : 1)) stampTNTcrate(grid, row, m);
+      if (rng() < cfg.VEIN.ICE_CHANCE * (biomeIndexAt(m) === 0 ? 1.8 : 1)) stampIcePocket(grid, row, m);
     }
 
     /* ---- Anti-wall guarantee: never allow a fully solid row where every
@@ -273,7 +286,8 @@
         guard++;
         var cc = randInt(0, cfg.COLS - 1);
         if (grid[cc].t === T.HARD_ROCK.id) {
-          grid[cc] = makeTile(rng() < 0.5 ? 'DIRT' : 'CLAY');
+          grid[cc] = row <= 1 ? makeTile(rng() < 0.5 ? 'DIRT' : 'CLAY')
+                              : makeTileScaled(rng() < 0.5 ? 'DIRT' : 'CLAY', m);
           need--;
         }
       }
@@ -300,7 +314,7 @@
         if (!ok) {
           var fix = Math.max(0, Math.min(cfg.COLS - 1, target));
           if (grid[fix].t !== T.TNT.id && grid[fix].t !== T.ICE.id && grid[fix].t !== T.GOLD.id) {
-            grid[fix] = makeTile('DIRT');
+            grid[fix] = row <= 1 ? makeTile('DIRT') : makeTileScaled('DIRT', m);
           }
         }
       }
@@ -325,7 +339,8 @@
         }
         if (!clear) {
           // soften the anchor cell itself (never onto a hazard, never TNT-adjacent spam)
-          grid[anchor] = makeTile(m > cfg.SPIKE_DEPTH_M + 60 && rng() < 0.3 ? 'HARD_ROCK' : (rng() < 0.5 ? 'CLAY' : 'DIRT'));
+          var softName = m > cfg.SPIKE_DEPTH_M + 60 && rng() < 0.3 ? 'HARD_ROCK' : (rng() < 0.5 ? 'CLAY' : 'DIRT');
+          grid[anchor] = row <= 1 ? makeTile(softName) : makeTileScaled(softName, m);
         }
       }
     }
