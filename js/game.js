@@ -44,6 +44,7 @@
   var vaultActive = null;
   var lastMilestone = 0;
   var bannerT = 0;
+  var renderDt = 1 / 60;   /* дельта последнего кадра — для затухания баннера в render() */
   var bannerText = '';
   var bannerColor = '#F2B705';
 
@@ -78,7 +79,12 @@
     return Math.floor(u.baseCost * Math.pow(u.costMult, meta[key]));
   }
 
-  function effectiveDPS() { return cfg.SAW.DPS_BASE * (1 + meta.dps * cfg.UPGRADES.dps.effect); }
+  function effectiveDPS() {
+    /* Эволюция урона: линейный рост за уровень + мультипликативный
+       Milestone бонус x1.25 за каждые 5 уровней зубьев */
+    var tierBonus = Math.pow(1.25, Math.floor(meta.dps / 5));
+    return cfg.SAW.DPS_BASE * (1 + meta.dps * cfg.UPGRADES.dps.effect) * tierBonus;
+  }
   function sawTeethCount() { return cfg.SAW.TEETH + Math.floor(meta.dps / 5) * 4; }
   function sawRadiusMult() { return 1 + Math.floor(meta.dps / 5) * 0.10; }
   function coolingRate() { return cfg.HEAT.IDLE_COOL * (1 + meta.radiator * 0.18); }
@@ -384,8 +390,12 @@
         if (!tile || tile.t === T.EMPTY.id) continue;
         if (tile.t === T.TNT.id) {
           breakTile(r, c, true);
-        } else if (world.damageTile(tile, cfg.SHOCK.DAMAGE)) {
-          breakTile(r, c, true);
+        } else {
+          /* Урон сейсмо-удара растет от уровня пилы и самого шока */
+          var shockDmg = cfg.SHOCK.DAMAGE * (1 + meta.dps * 0.25) * (1 + meta.shock * 0.2);
+          if (world.damageTile(tile, shockDmg)) {
+            breakTile(r, c, true);
+          }
         }
       }
     }
@@ -504,6 +514,141 @@
     }
     updateHUD(true);
     if (hp <= 0) gameOver();
+  }
+
+  function showBanner(text, color) {
+    bannerText = text;
+    bannerColor = color || '#F2B705';
+    bannerT = 2.4;
+  }
+
+  /* ---------- МЕХАНИКА БОСС-ШЛЮЗА (VAULT_GATE каждые 250м) ---------- */
+  function vaultCoreCells(gv) {
+    var cells = [];
+    for (var dr = 0; dr < cfg.VAULT.CORE_SIZE; dr++) {
+      for (var dc = 0; dc < cfg.VAULT.CORE_SIZE; dc++) {
+        cells.push({ r: gv.coreRow + dr, c: gv.coreCol + dc });
+      }
+    }
+    return cells;
+  }
+
+  function vaultCoreHP(gv) {
+    var cur = 0, max = 0, alive = 0;
+    var cells = vaultCoreCells(gv);
+    for (var i = 0; i < cells.length; i++) {
+      var t = world.getTile(cells[i].r, cells[i].c);
+      if (t && t.t === T.VAULT_CORE.id) {
+        cur += t.hp; max += (t.maxHp || t.hp); alive++;
+      } else {
+        max += cfg.VAULT.CORE_HP; /* уничтоженная клетка не учитывается в прогрессе */
+      }
+    }
+    return { cur: cur, max: max, alive: alive };
+  }
+
+  function shatterVaultPlates(gv) {
+    for (var r = gv.topRow; r <= gv.bottomRow; r++) {
+      for (var c = 0; c < cfg.COLS; c++) {
+        var t = world.getTile(r, c);
+        if (t && t.t === T.VAULT_PLATE.id) breakTile(r, c, true);
+      }
+    }
+  }
+
+  function breachVault(gv) {
+    gv.breached = true;
+    vaultActive = null;
+    shatterVaultPlates(gv);
+    /* Фонтан из 30 золотых самородков из центра шлюза */
+    var cx = tileWorldX(Math.floor(cfg.COLS / 2)) + tileSize / 2;
+    var cy = tileWorldY(gv.topRow + Math.floor(cfg.VAULT.THICK_ROWS / 2));
+    var nv = nuggetValue();
+    for (var i = 0; i < 30; i++) {
+      spawnNugget(cx + rand(-tileSize * 1.5, tileSize * 1.5), cy + rand(-8, 8), nv, 'gold');
+    }
+    /* +1 сердце прочности за прорыв */
+    if (hp < maxHp) { hp++; updateHUD(true); }
+    gold = Math.round(gold + cfg.VAULT.INTERVAL_M * 0.2);
+    audio.boom();
+    shake = Math.min(shake + 9, cfg.FX.MAX_SHAKE);
+    haptic('heavy');
+    addFloater('ЗОЛОТОЙ ШЛЮЗ ОТКРЫТ!', '#F2B705');
+    showBanner('ШЛЮЗ ПРОБИТ! +БОНУС!', '#F2B705');
+  }
+
+  function vaultLaserFail(gv) {
+    gv.breached = true;
+    vaultActive = null;
+    shatterVaultPlates(gv);
+    hp -= cfg.VAULT.FAIL_HP_DAMAGE;
+    updateHUD(true);
+    audio.boom();
+    shake = Math.min(shake + 12, cfg.FX.MAX_SHAKE);
+    haptic('heavy');
+    addFloater('ЛАЗЕР ШЛЮЗА!', '#E63946');
+    showBanner('ЛАЗЕР ШЛЮЗА! -1 СЕРДЦЕ', '#E63946');
+    if (hp <= 0) gameOver();
+  }
+
+  function updateVault(dt, sawR) {
+    var sawBottomRow = rowAt(saw.wy + sawR);
+    if (!vaultActive) {
+      /* Активируем ближайший неразрушенный шлюз, когда пила долетела до его верха */
+      var best = null;
+      for (var i = 0; i < world.vaults.length; i++) {
+        var gv = world.vaults[i];
+        if (gv.breached) continue;
+        if (sawBottomRow >= gv.topRow && (best === null || gv.topRow > best.topRow)) best = gv;
+      }
+      if (best) {
+        vaultActive = { gate: best, timer: cfg.VAULT.TIMER_SECONDS };
+        showBanner('⚠ ШЛЮЗ ' + best.depthM + 'м — ШТУРМ!', '#D96B43');
+        addFloater('БОСС-ШЛЮЗ: БЕЙ ЯДРО!', '#E63946');
+        audio.uiClick();
+        haptic('heavy');
+      }
+    } else {
+      var gate = vaultActive.gate;
+      if (gate.breached) { vaultActive = null; return; }
+      /* Ядро пробито? */
+      var cores = vaultCoreHP(gate);
+      if (cores.alive === 0) { breachVault(gate); return; }
+      /* Таймер обратного отсчёта */
+      vaultActive.timer -= dt;
+      if (vaultActive.timer <= 0) { vaultLaserFail(gate); return; }
+    }
+  }
+
+  /* Полоска HP ядра + таймер штурма над активным шлюзом (мирское пространство) */
+  function drawVaultOverlay(g) {
+    if (!vaultActive || !running) return;
+    var gv = vaultActive.gate;
+    if (gv.breached) return;
+    var cores = vaultCoreHP(gv);
+    var barW = tileSize * 3.2;
+    var bx = tileWorldX(Math.floor(cfg.COLS / 2)) + tileSize / 2 - barW / 2;
+    var by = tileWorldY(gv.topRow) - 26;
+    var frac = clamp(cores.cur / (cores.max || 1), 0, 1);
+
+    g.fillStyle = 'rgba(43,33,30,0.85)';
+    g.fillRect(bx - 3, by - 3, barW + 6, 12);
+    g.fillStyle = '#E63946';
+    g.fillRect(bx, by, barW, 6);
+    g.fillStyle = '#F2B705';
+    g.fillRect(bx, by, barW * frac, 6);
+    g.strokeStyle = '#2B211E';
+    g.lineWidth = 1.5;
+    g.strokeRect(bx - 3, by - 3, barW + 6, 12);
+
+    g.font = '900 11px sans-serif';
+    g.textAlign = 'center';
+    var label = 'ШТУРМ ШЛЮЗА: ' + Math.max(0, vaultActive.timer).toFixed(1) + 'с';
+    var lw = g.measureText(label).width;
+    g.fillStyle = 'rgba(43,33,30,0.8)';
+    g.fillRect(bx + barW / 2 - lw / 2 - 6, by - 22, lw + 12, 16);
+    g.fillStyle = vaultActive.timer < 4 ? '#E63946' : '#FFF3C4';
+    g.fillText(label, bx + barW / 2, by - 10);
   }
 
   /* ============================================================
@@ -640,8 +785,16 @@
       }
     }
 
-    /* 5. Таймер обвала при долгом простое на камне */
-    if (contactThisFrame) {
+    /* 5. Справедливый таймер обвала:
+       - штурм Босс-шлюза или активный режим Redline (ТУРБО в красной зоне)
+         НЕ копят завал, а плавно разряжают его;
+       - stallTimer растёт только при контакте с породой ВНЕ redline
+         (игрок застрял / бросил управление на твёрдой плите). */
+    var inVaultAssault = !!vaultActive;
+    if (inVaultAssault || inRedline()) {
+      stallTimer = Math.max(0, stallTimer - dt * 1.5);
+      if (stallTimer <= 2.6) elStallWarn.style.display = 'none';
+    } else if (contactThisFrame) {
       stallTimer += dt;
       if (stallTimer > 2.6) {
         elStallWarn.style.display = 'block';
@@ -725,7 +878,10 @@
       if (clinkTimer <= 0) clinkStep = 0;
     }
 
-    /* 10. Частицы и всплывающий текст */
+    /* 10. Босс-шлюз каждые 250м: активация, таймер штурма, прорыв/лазер */
+    updateVault(dt, sawR);
+
+    /* 11. Частицы и всплывающий текст */
     for (var p = particles.length - 1; p >= 0; p--) {
       var pt = particles[p];
       pt.vy += cfg.FX.PARTICLE_GRAVITY * dt;
@@ -791,6 +947,8 @@
       g.fillRect(pt.x - pt.s / 2, pt.y - pt.s / 2, pt.s, pt.s);
     }
     g.globalAlpha = 1;
+
+    drawVaultOverlay(g);   /* HP ядра шлюза + таймер штурма (поверх мира) */
     g.restore();
 
     g.save();
@@ -813,6 +971,21 @@
       vg.addColorStop(1, 'rgba(230,57,70,0.2)');
       g.fillStyle = vg;
       g.fillRect(0, 0, W, H);
+    }
+
+    /* Крупный баннер событий шлюза: ШЛЮЗ ПРОБИТ! / ЛАЗЕР ШЛЮЗА! */
+    if (bannerT > 0) {
+      bannerT -= renderDt;
+      var bA = clamp(bannerT / 0.6, 0, 1);
+      g.globalAlpha = bA;
+      g.font = '900 ' + Math.round(Math.min(W * 0.062, 26)) + 'px sans-serif';
+      g.textAlign = 'center';
+      g.lineWidth = 5;
+      g.strokeStyle = '#2B211E';
+      g.strokeText(bannerText, W / 2, H * 0.28);
+      g.fillStyle = bannerColor;
+      g.fillText(bannerText, W / 2, H * 0.28);
+      g.globalAlpha = 1;
     }
   }
 
@@ -1128,6 +1301,7 @@
     if (!running) return;
     var dt = Math.min(0.033, (t - lastTime) / 1000);
     lastTime = t;
+    renderDt = dt > 0 ? dt : renderDt;
     if (dt > 0) update(dt);
     if (running) {
       render();
