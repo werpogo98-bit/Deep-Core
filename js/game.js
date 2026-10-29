@@ -39,6 +39,7 @@
   var magmaHeatLatch = {};
   var spikeLatch = {};
   var meta = { dps: 0, radiator: 0, vacuum: 0, shock: 0 };
+  var clinkStep = 0, clinkTimer = 0;
 
   var vaultActive = null;
   var lastMilestone = 0;
@@ -191,10 +192,13 @@
   }
 
   function refreshShop() {
+    var lvlIds = { dps: 'lvl-dps', radiator: 'lvl-radiator', vacuum: 'lvl-vacuum', shock: 'lvl-shock' };
     Object.keys(shopBtns).forEach(function (key) {
       var btn = shopBtns[key];
       var u = cfg.UPGRADES[key];
       var costEl = btn.querySelector('.shop-btn-cost');
+      var lvlEl = document.getElementById(lvlIds[key]);
+      if (lvlEl) lvlEl.textContent = 'УР. ' + meta[key];
       if (meta[key] >= u.maxLevel) {
         costEl.textContent = 'МАКС';
         btn.classList.add('locked');
@@ -206,6 +210,11 @@
         btn.classList.remove('locked');
       }
     });
+    /* Красная зона шкалы нагрева следует за апгрейдом радиатора */
+    if (elHeatBar) {
+      elHeatBar.style.setProperty('--rl-min', redlineMin() + '%');
+      elHeatBar.style.setProperty('--rl-max', redlineMax() + '%');
+    }
   }
 
   function buyUpgrade(key) {
@@ -700,12 +709,20 @@
       n.y += n.vy * dt;
       if (n.y < collectY + 18 && dist < 110) {
         gold = Math.round(gold + n.v);
-        audio.goldClink(0);
+        clinkStep = Math.min(clinkStep + 1, 14);
+        clinkTimer = 0.22;
+        audio.goldClink(clinkStep);
         addFloater('+' + n.v, n.kind === 'gold' ? '#F2B705' : '#1B998B');
         nuggets.splice(i, 1);
       } else if (n.t > 8) {
         nuggets.splice(i, 1);
       }
+    }
+
+    /* Затухание серии звона монет: пауза > 0.22с сбрасывает нарастание */
+    if (clinkTimer > 0) {
+      clinkTimer -= dt;
+      if (clinkTimer <= 0) clinkStep = 0;
     }
 
     /* 10. Частицы и всплывающий текст */
@@ -734,7 +751,9 @@
   function render() {
     var g = ctx2d;
     g.clearRect(0, 0, W, H);
-    g.fillStyle = '#F4ECE1';
+    /* Фон шахты меняется с глубиной — цвет текущего биома */
+    var biome = cfg.BIOMES[world.biomeIndexAt(currentDepthM())];
+    g.fillStyle = biome.tint || '#F4ECE1';
     g.fillRect(0, 0, W, H);
 
     var sx = 0, sy = 0;
@@ -776,6 +795,7 @@
 
     g.save();
     g.translate(sx, sy);
+    drawCollector(g);
     for (var nI = 0; nI < nuggets.length; nI++) {
       var n = nuggets[nI];
       g.fillStyle = n.kind === 'gold' ? '#F2B705' : '#1B998B';
@@ -794,6 +814,64 @@
       g.fillStyle = vg;
       g.fillRect(0, 0, W, H);
     }
+  }
+
+  /* Латунно-эспрессо воронка приёмника руды (экранное пространство) */
+  function drawCollector(g) {
+    var cx = W / 2;
+    var cy = H * cfg.NUGGET.COLLECT_Y_RATIO;
+    var wTop = Math.min(W * 0.34, 150);
+    var hgt = 26;
+
+    g.save();
+    g.translate(cx, cy);
+
+    /* Воронка-чаша */
+    g.beginPath();
+    g.moveTo(-wTop / 2, -hgt * 0.45);
+    g.lineTo(wTop / 2, -hgt * 0.45);
+    g.lineTo(wTop * 0.22, hgt * 0.55);
+    g.lineTo(-wTop * 0.22, hgt * 0.55);
+    g.closePath();
+    g.fillStyle = '#F2B705';
+    g.fill();
+    g.strokeStyle = '#2B211E';
+    g.lineWidth = 3;
+    g.stroke();
+
+    /* Тёмная внутренняя тень жерла */
+    g.beginPath();
+    g.moveTo(-wTop * 0.38, -hgt * 0.3);
+    g.lineTo(wTop * 0.38, -hgt * 0.3);
+    g.lineTo(wTop * 0.16, hgt * 0.4);
+    g.lineTo(-wTop * 0.16, hgt * 0.4);
+    g.closePath();
+    g.fillStyle = 'rgba(43,33,30,0.55)';
+    g.fill();
+
+    /* Верхняя латунная кромка-ободок */
+    g.fillStyle = '#FFF3C4';
+    g.fillRect(-wTop / 2 - 4, -hgt * 0.45 - 5, wTop + 8, 6);
+    g.strokeStyle = '#2B211E';
+    g.lineWidth = 2;
+    g.strokeRect(-wTop / 2 - 4, -hgt * 0.45 - 5, wTop + 8, 6);
+
+    /* Заклёпки по ободку */
+    g.fillStyle = '#2B211E';
+    for (var ri = -2; ri <= 2; ri++) {
+      g.beginPath();
+      g.arc(ri * (wTop / 5), -hgt * 0.45 - 2, 1.8, 0, Math.PI * 2);
+      g.fill();
+    }
+
+    /* Основание-труба */
+    g.fillStyle = '#6B5744';
+    g.fillRect(-wTop * 0.14, hgt * 0.55, wTop * 0.28, 8);
+    g.strokeStyle = '#2B211E';
+    g.lineWidth = 2;
+    g.strokeRect(-wTop * 0.14, hgt * 0.55, wTop * 0.28, 8);
+
+    g.restore();
   }
 
   function drawTile(g, tile, x, y) {
@@ -840,6 +918,42 @@
       g.beginPath(); g.arc(cx, cy, s * 0.28, 0, Math.PI * 2); g.fill();
       g.fillStyle = '#E63946';
       g.beginPath(); g.arc(cx, cy, 3.5, 0, Math.PI * 2); g.fill();
+    } else if (name === 'VAULT_PLATE') {
+      /* Броневая плита босса: тёмная сталь + 4 золотые заклёпки по углам */
+      var rpIn = 5;
+      g.fillStyle = '#57453a';
+      g.fillRect(x + pad + rpIn, y + pad + rpIn, s - rpIn * 2, s - rpIn * 2);
+      g.strokeStyle = 'rgba(242,183,5,0.35)';
+      g.lineWidth = 1.5;
+      g.strokeRect(x + pad + rpIn, y + pad + rpIn, s - rpIn * 2, s - rpIn * 2);
+      g.fillStyle = '#F2B705';
+      var rv = rpIn + 3;
+      g.beginPath(); g.arc(x + pad + rv, y + pad + rv, 2.2, 0, Math.PI * 2); g.fill();
+      g.beginPath(); g.arc(x + s - rv, y + pad + rv, 2.2, 0, Math.PI * 2); g.fill();
+      g.beginPath(); g.arc(x + pad + rv, y + s - rv, 2.2, 0, Math.PI * 2); g.fill();
+      g.beginPath(); g.arc(x + s - rv, y + s - rv, 2.2, 0, Math.PI * 2); g.fill();
+    } else if (name === 'VAULT_CORE') {
+      /* Пульсирующее энергетическое ядро с прицелом в центре */
+      var pulse = 0.65 + 0.35 * Math.sin(performance.now() / 180);
+      var cg = g.createRadialGradient(cx, cy, 1, cx, cy, s * 0.55);
+      cg.addColorStop(0, '#FFF3C4');
+      cg.addColorStop(0.5, 'rgba(242,183,5,' + pulse + ')');
+      cg.addColorStop(1, '#D96B43');
+      g.fillStyle = cg;
+      g.beginPath(); g.arc(cx, cy, s * 0.46, 0, Math.PI * 2); g.fill();
+      g.strokeStyle = '#2B211E';
+      g.lineWidth = 2;
+      g.beginPath(); g.arc(cx, cy, s * 0.46, 0, Math.PI * 2); g.stroke();
+      g.beginPath(); g.arc(cx, cy, s * 0.26 * pulse + 2, 0, Math.PI * 2); g.stroke();
+      g.lineWidth = 1.5;
+      g.beginPath();
+      g.moveTo(cx - s * 0.42, cy); g.lineTo(cx - s * 0.14, cy);
+      g.moveTo(cx + s * 0.14, cy); g.lineTo(cx + s * 0.42, cy);
+      g.moveTo(cx, cy - s * 0.42); g.lineTo(cx, cy - s * 0.14);
+      g.moveTo(cx, cy + s * 0.14); g.lineTo(cx, cy + s * 0.42);
+      g.stroke();
+      g.fillStyle = '#2B211E';
+      g.beginPath(); g.arc(cx, cy, 2, 0, Math.PI * 2); g.fill();
     }
 
     var maxHp = tile.maxHp || def.hp || 1;
@@ -866,14 +980,6 @@
     var aY = saw.y;
     var molten = inRedline();
     var r = saw.r * sawRadiusMult();
-
-    /* Подвесная рама бура */
-    g.strokeStyle = '#2B211E';
-    g.lineWidth = 5;
-    g.beginPath();
-    g.moveTo(saw.x - r * 0.6, 0); g.lineTo(saw.x - r * 0.4, aY);
-    g.moveTo(saw.x + r * 0.6, 0); g.lineTo(saw.x + r * 0.4, aY);
-    g.stroke();
 
     if (heat > 50 || molten) {
       g.fillStyle = 'rgba(230,57,70,' + (molten ? 0.42 : 0.18) + ')';
@@ -905,6 +1011,72 @@
 
     g.fillStyle = '#2B211E';
     g.beginPath(); g.arc(0, 0, r * 0.3, 0, Math.PI * 2); g.fill();
+    g.restore();
+
+    /* Бронированный Гиро-Кожух (Industrial Drill Hood):
+       не вращается с зубьями, слегка наклоняется от горизонтальной скорости */
+    var hoodTilt = clamp(saw.vx * 0.0005, -0.25, 0.25);
+    g.save();
+    g.translate(saw.x, aY);
+    g.rotate(hoodTilt);
+
+    /* Реактивные языки пламени из сопел при бусте — вдавливают пилу в грунт */
+    if (boost) {
+      var nozL = -r * 0.45, nozR = r * 0.45;
+      var flameH = 10 + Math.random() * 12;
+      for (var fi = 0; fi < 2; fi++) {
+        var fx = fi === 0 ? nozL : nozR;
+        var fh = flameH * (0.8 + Math.random() * 0.4);
+        g.fillStyle = '#F2B705';
+        g.beginPath();
+        g.moveTo(fx - 4, -r - 15);
+        g.lineTo(fx, -r - 15 - fh);
+        g.lineTo(fx + 4, -r - 15);
+        g.closePath();
+        g.fill();
+        g.fillStyle = '#E63946';
+        g.beginPath();
+        g.moveTo(fx - 2.2, -r - 15);
+        g.lineTo(fx, -r - 15 - fh * 0.6);
+        g.lineTo(fx + 2.2, -r - 15);
+        g.closePath();
+        g.fill();
+      }
+    }
+
+    /* Стальная дуга-щиток над верхней половиной пилы */
+    g.strokeStyle = '#2B211E';
+    g.lineWidth = 6;
+    g.lineCap = 'round';
+    g.beginPath();
+    g.arc(0, 0, r + 5, Math.PI * 1.1, Math.PI * 1.9);
+    g.stroke();
+    g.lineCap = 'butt';
+
+    /* Латунная заклёпка по центру сверху кожуха */
+    g.fillStyle = '#F2B705';
+    g.beginPath(); g.arc(0, -(r + 5), 3.2, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = '#2B211E';
+    g.lineWidth = 1.5;
+    g.stroke();
+
+    /* Два компактных реактивных сопла сверху по бокам кожуха (высота 10px) */
+    g.fillStyle = '#6B5744';
+    g.strokeStyle = '#2B211E';
+    g.lineWidth = 2;
+    var nozzleXs = [-r * 0.45, r * 0.45];
+    for (var ni = 0; ni < 2; ni++) {
+      var nx = nozzleXs[ni];
+      g.beginPath();
+      g.moveTo(nx - 4, -r - 5);
+      g.lineTo(nx - 3, -r - 15);
+      g.lineTo(nx + 3, -r - 15);
+      g.lineTo(nx + 4, -r - 5);
+      g.closePath();
+      g.fill();
+      g.stroke();
+    }
+
     g.restore();
   }
 
@@ -990,6 +1162,15 @@
 
     document.getElementById('btn-start').addEventListener('click', startGame);
     document.getElementById('btn-restart').addEventListener('click', startGame);
+
+    var elMuteBtn = document.getElementById('btn-mute');
+    if (elMuteBtn) {
+      elMuteBtn.addEventListener('click', function () {
+        audio.resume();
+        audio.toggleMute();
+        elMuteBtn.textContent = audio.isMuted() ? '🔇' : '🔊';
+      });
+    }
 
     canvas.addEventListener('mousedown', onDown);
     window.addEventListener('mousemove', onMove);
